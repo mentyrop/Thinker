@@ -34,7 +34,7 @@ def get_settings() -> Settings:
         bot_token=os.getenv("BOT_TOKEN", ""),
         database_url=os.getenv(
             "DATABASE_URL",
-            "postgresql+asyncpg://postgres:postgres@localhost:5432/thought_bot",
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/thinker_bot",
         ),
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
