@@ -5,9 +5,43 @@
 """
 from __future__ import annotations
 
+import html
 from urllib.parse import quote
 
 from app.database.models import Thought
+
+
+def format_project_goal(
+    project_goal: str,
+    success_criteria: list[str] | None = None,
+    title: str | None = None,
+) -> str:
+    """Сообщение с предложенной формулировкой результата проекта."""
+    lines = ["Предлагаю такой результат:", "", f"🎯 <b>{html.escape(project_goal)}</b>"]
+    if success_criteria:
+        lines.append("")
+        lines.append("Критерии готовности:")
+        for c in success_criteria:
+            lines.append(f"• {html.escape(c)}")
+    if title:
+        lines.append("")
+        lines.append(f"Короткое название: <i>{html.escape(title)}</i>")
+    return "\n".join(lines)
+
+
+def format_project_steps(
+    steps: list[str], project_goal: str | None = None
+) -> str:
+    """Сообщение с предложенными шагами проекта."""
+    lines = []
+    if project_goal:
+        lines.append(f"🎯 Результат: <b>{html.escape(project_goal)}</b>")
+        lines.append("")
+    lines.append("Предлагаю такие шаги:")
+    lines.append("")
+    for i, step in enumerate(steps, 1):
+        lines.append(f"{i}. {html.escape(step)}")
+    return "\n".join(lines)
 
 
 def build_delegation_text(thought: Thought) -> str:

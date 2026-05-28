@@ -7,4 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD alembic upgrade head && python -m app.main
+# При каждом старте контейнера сначала применяются миграции, затем бот.
+RUN chmod +x docker-entrypoint.sh
+ENTRYPOINT ["./docker-entrypoint.sh"]

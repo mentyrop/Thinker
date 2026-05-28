@@ -22,6 +22,10 @@ services:
     container_name: thinker_bot
     restart: unless-stopped
     env_file: .env
+    # Внутри docker-сети БД доступна по имени сервиса `postgres`, а не localhost.
+    # Перебиваем DATABASE_URL из .env, чтобы запуск работал из коробки.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/thinker_bot
     depends_on:
       postgres:
         condition: service_healthy

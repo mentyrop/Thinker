@@ -151,6 +151,21 @@ def _strip_code_fences(content: str) -> str:
     return content
 
 
+def _extract_json(content: str) -> str:
+    """Аккуратно достаёт JSON, даже если модель добавила текст вокруг.
+
+    Сначала снимаем code-fence, затем берём подстроку от первой `{`
+    до последней `}`. Если ничего не нашли — возвращаем исходную строку,
+    пусть json.loads сам бросит ошибку, которую перехватит вызывающий код.
+    """
+    cleaned = _strip_code_fences(content)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return cleaned[start : end + 1]
+    return cleaned
+
+
 def _parse(content: str, raw_text: str) -> ThoughtAnalysis:
     try:
         payload = json.loads(_strip_code_fences(content))
@@ -160,11 +175,16 @@ def _parse(content: str, raw_text: str) -> ThoughtAnalysis:
         return _fallback(raw_text)
 
 
-async def analyze_thought(raw_text: str) -> ThoughtAnalysis:
-    """Анализирует мысль. Никогда не бросает исключение наружу."""
+async def _chat_json(system_prompt: str, user_text: str) -> str | None:
+    """Один запрос к OpenAI-совместимому /chat/completions.
+
+    Возвращает строку-контент ответа модели или None при любой ошибке
+    (нет ключа, сеть, неожиданный формат ответа). Сам JSON не парсит —
+    это делает вызывающий код.
+    """
     if not settings.llm_api_key:
-        logger.warning("LLM_API_KEY не задан — использую fallback-анализ.")
-        return _fallback(raw_text)
+        logger.warning("LLM_API_KEY не задан — LLM недоступна.")
+        return None
 
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
     headers = {
@@ -176,8 +196,8 @@ async def analyze_thought(raw_text: str) -> ThoughtAnalysis:
         "temperature": 0.3,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": raw_text},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
         ],
     }
 
@@ -186,9 +206,125 @@ async def analyze_thought(raw_text: str) -> ThoughtAnalysis:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
+            return data["choices"][0]["message"]["content"]
     except (httpx.HTTPError, KeyError, ValueError) as exc:
-        logger.warning("Ошибка обращения к LLM, использую fallback: %s", exc)
-        return _fallback(raw_text)
+        logger.warning("Ошибка обращения к LLM: %s", exc)
+        return None
 
+
+async def analyze_thought(raw_text: str) -> ThoughtAnalysis:
+    """Анализирует мысль. Никогда не бросает исключение наружу."""
+    content = await _chat_json(SYSTEM_PROMPT, raw_text)
+    if content is None:
+        return _fallback(raw_text)
     return _parse(content, raw_text)
+
+
+# --------------------------------------------------------------------------- #
+# Мини-проекты: LLM сама предлагает формулировку результата и шаги.            #
+# Обе функции возвращают Optional — None означает «не получилось, попроси      #
+# пользователя ввести вручную». Логика бота при None показывает fallback.      #
+# --------------------------------------------------------------------------- #
+
+
+class ProjectGoalResult(BaseModel):
+    project_goal: str
+    success_criteria: list[str] = Field(default_factory=list)
+    short_title: str
+
+
+class ProjectStepsResult(BaseModel):
+    project_goal: str | None = None
+    steps: list[str] = Field(default_factory=list)
+    first_step: str
+    calendar_title: str
+    duration_minutes: int = Field(default=60, ge=1, le=24 * 60)
+
+
+GOAL_PROMPT = """Ты ассистент Telegram-бота "Мыслитель". Помогаешь превратить расплывчатую мысль в чёткий желаемый результат мини-проекта. Возвращай только валидный JSON без markdown.
+
+По тексту мысли пользователя сформулируй:
+- project_goal — одно ясное предложение о том, какого результата человек хочет достичь (результат, а не процесс).
+- success_criteria — список из 2-4 коротких критериев, по которым будет понятно, что результат достигнут.
+- short_title — короткое название проекта (2-5 слов) для календаря и списков.
+
+Правила:
+- Формулируй за пользователя, не задавай ему вопросов.
+- Пиши конкретно и по делу, без воды.
+- Возвращай только JSON по схеме:
+{
+  "project_goal": "...",
+  "success_criteria": ["...", "..."],
+  "short_title": "..."
+}
+
+Пример. Мысль: "Хочу собрать семейное древо по линии бабушки, но не знаю, с чего начать."
+Ответ:
+{
+  "project_goal": "Составить документированное семейное древо по линии бабушки минимум на три поколения",
+  "success_criteria": ["Известны ФИО, даты и места рождения предков на 3 поколения", "Собраны подтверждающие документы или их копии", "Древо оформлено в едином файле или сервисе"],
+  "short_title": "Семейное древо по линии бабушки"
+}"""
+
+
+STEPS_PROMPT = """Ты ассистент Telegram-бота "Мыслитель". Помогаешь разложить мысль или проект на конкретные выполнимые шаги. Возвращай только валидный JSON без markdown.
+
+По тексту мысли (и желаемому результату, если он дан) предложи:
+- project_goal — желаемый результат одним предложением (повтори или уточни данный, либо сформулируй сам).
+- steps — список из 3-6 конкретных последовательных шагов. Каждый шаг — короткое действие, начинающееся с глагола.
+- first_step — самый первый конкретный шаг (обычно это steps[0]).
+- calendar_title — короткое название для календарного события под первый шаг.
+- duration_minutes — разумная длительность первого шага в минутах (число).
+
+Правила:
+- Делай шаги за пользователя, не задавай ему вопросов.
+- Шаги должны быть выполнимыми и конкретными, без воды.
+- Возвращай только JSON по схеме:
+{
+  "project_goal": "...",
+  "steps": ["...", "...", "..."],
+  "first_step": "...",
+  "calendar_title": "...",
+  "duration_minutes": 60
+}
+
+Пример. Мысль: "Хочу собрать семейное древо по линии бабушки." Результат: "Составить документированное семейное древо по линии бабушки минимум на три поколения".
+Ответ:
+{
+  "project_goal": "Составить документированное семейное древо по линии бабушки минимум на три поколения",
+  "steps": ["Записать всё, что уже известно: ФИО, даты, места", "Расспросить старших родственников и записать их рассказы", "Запросить документы в архивах ЗАГС по местам рождения", "Внести данные в сервис для построения древа", "Сверить и дополнить недостающие звенья"],
+  "first_step": "Записать всё, что уже известно: ФИО, даты и места рождения родственников",
+  "calendar_title": "Собрать известные данные о родственниках",
+  "duration_minutes": 60
+}"""
+
+
+async def generate_project_goal(thought_text: str) -> ProjectGoalResult | None:
+    """LLM предлагает формулировку результата проекта. None при неудаче."""
+    content = await _chat_json(GOAL_PROMPT, thought_text)
+    if content is None:
+        return None
+    try:
+        payload = json.loads(_extract_json(content))
+        return ProjectGoalResult.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError) as exc:
+        logger.warning("generate_project_goal: невалидный JSON: %s", exc)
+        return None
+
+
+async def generate_project_steps(
+    thought_text: str, project_goal: str | None = None
+) -> ProjectStepsResult | None:
+    """LLM раскладывает мысль на шаги. None при неудаче."""
+    user_text = thought_text
+    if project_goal:
+        user_text = f"Мысль: {thought_text}\nЖелаемый результат: {project_goal}"
+    content = await _chat_json(STEPS_PROMPT, user_text)
+    if content is None:
+        return None
+    try:
+        payload = json.loads(_extract_json(content))
+        return ProjectStepsResult.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError) as exc:
+        logger.warning("generate_project_steps: невалидный JSON: %s", exc)
+        return None

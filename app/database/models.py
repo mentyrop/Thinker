@@ -77,6 +77,12 @@ class Thought(Base):
         Integer, default=30, server_default="30", nullable=False
     )
 
+    # Мини-проекты: сформулированный результат и шаги (LLM или вручную).
+    project_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_steps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    success_criteria: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     llm_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

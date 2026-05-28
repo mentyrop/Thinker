@@ -109,6 +109,40 @@ class ThoughtRepository:
         return thought
 
     @staticmethod
+    async def set_project_goal(
+        session: AsyncSession,
+        thought: Thought,
+        project_goal: str,
+        success_criteria: list[str] | None = None,
+        project_title: str | None = None,
+    ) -> Thought:
+        thought.project_goal = project_goal
+        if success_criteria is not None:
+            thought.success_criteria = success_criteria
+        if project_title is not None:
+            thought.project_title = project_title
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
+    async def set_project_steps(
+        session: AsyncSession,
+        thought: Thought,
+        steps: list[str],
+        first_step: str | None = None,
+        project_goal: str | None = None,
+    ) -> Thought:
+        thought.project_steps = steps
+        if first_step is not None:
+            thought.suggested_first_step = first_step
+        if project_goal is not None:
+            thought.project_goal = project_goal
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
     async def last_for_user(
         session: AsyncSession, user_id: int, limit: int = 10
     ) -> list[Thought]:

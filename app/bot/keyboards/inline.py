@@ -96,6 +96,43 @@ def project_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def project_goal_kb() -> InlineKeyboardMarkup:
+    """После того как LLM предложила формулировку результата."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Подходит", callback_data="goal:ok")
+    kb.button(text="✏️ Изменить", callback_data="goal:edit")
+    kb.button(text="🪜 Разбить на шаги", callback_data="proj:steps")
+    kb.button(text="📅 Добавить первый шаг в календарь", callback_data="proj:calendar")
+    kb.button(text="💭 Подумать позже", callback_data="proj:later")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(2, 1, 1, 1, 1)
+    return kb.as_markup()
+
+
+def project_goal_saved_kb() -> InlineKeyboardMarkup:
+    """После сохранения результата — что делать дальше."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🪜 Разбить на шаги", callback_data="proj:steps")
+    kb.button(text="📅 Добавить первый шаг в календарь", callback_data="proj:calendar")
+    kb.button(text="💭 Подумать позже", callback_data="proj:later")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def project_steps_kb() -> InlineKeyboardMarkup:
+    """После того как LLM предложила шаги проекта."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📅 Добавить первый шаг в календарь", callback_data="proj:calendar")
+    kb.button(text="✅ Сохранить как мини-проект", callback_data="steps:save")
+    kb.button(text="✏️ Редактировать шаги", callback_data="steps:edit")
+    kb.button(text="🎯 Сформулировать результат", callback_data="proj:outcome")
+    kb.button(text="💭 Подумать позже", callback_data="proj:later")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def reanalyze_kb(thought_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🔄 Разобрать снова", callback_data=f"reanalyze:{thought_id}")

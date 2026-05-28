@@ -23,7 +23,10 @@ from app.bot.keyboards.inline import (
     calendar_result_kb,
     delegation_kb,
     first_step_kb,
+    project_goal_kb,
+    project_goal_saved_kb,
     project_kb,
+    project_steps_kb,
     research_kb,
     yes_no_kb,
 )
@@ -35,7 +38,11 @@ from app.database.repositories import (
     UserRepository,
 )
 from app.services import calendar_service, thought_processor
-from app.services.llm_service import analyze_thought
+from app.services.llm_service import (
+    analyze_thought,
+    generate_project_goal,
+    generate_project_steps,
+)
 
 router = Router(name="thoughts")
 
@@ -272,7 +279,9 @@ async def rt_later_no(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Маршрут: project
+# Маршрут: project — бот САМ предлагает результат и шаги через LLM.
+# Ручной ввод используется только как правка («Изменить»/«Редактировать»)
+# или fallback, если LLM недоступна / вернула невалидный JSON.
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "proj:outcome")
 async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
@@ -283,10 +292,64 @@ async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FS
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="in_progress"
     )
-    await state.set_state(ThoughtStates.waiting_for_project_outcome)
-    await callback.message.answer(
-        "Опиши одним сообщением, какой результат ты хочешь получить."
+    await callback.answer()
+
+    thinking = await callback.message.answer("Формулирую результат…")
+    result = await generate_project_goal(thought.raw_text)
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
+
+    if result is None:
+        # Fallback: просим пользователя сформулировать самому.
+        await state.set_state(ThoughtStates.waiting_for_project_outcome)
+        await callback.message.answer(
+            "Опиши одним сообщением, какой результат ты хочешь получить."
+        )
+        return
+
+    await state.update_data(
+        proposed_goal=result.project_goal,
+        proposed_criteria=result.success_criteria,
+        proposed_title=result.short_title,
     )
+    await callback.message.answer(
+        thought_processor.format_project_goal(
+            result.project_goal, result.success_criteria, result.short_title
+        ),
+        reply_markup=project_goal_kb(),
+    )
+
+
+@router.callback_query(F.data == "goal:ok")
+async def goal_ok(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    data = await state.get_data()
+    goal = data.get("proposed_goal")
+    if not goal:
+        await callback.answer("Нет предложенного результата.", show_alert=True)
+        return
+    await ThoughtRepository.set_project_goal(
+        session,
+        thought,
+        project_goal=goal,
+        success_criteria=data.get("proposed_criteria"),
+        project_title=data.get("proposed_title"),
+    )
+    await callback.message.answer(
+        "Отлично. Результат сохранён.", reply_markup=project_goal_saved_kb()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "goal:edit")
+async def goal_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(ThoughtStates.waiting_for_project_outcome)
+    await callback.message.answer("Напиши результат своими словами одним сообщением.")
     await callback.answer()
 
 
@@ -299,12 +362,13 @@ async def on_project_outcome(
         await message.answer(NOT_FOUND, reply_markup=after_kb())
         await state.set_state(None)
         return
-    await ThoughtRepository.set_summary(session, thought, message.text)
+    await ThoughtRepository.set_project_goal(
+        session, thought, project_goal=message.text
+    )
     await state.set_state(None)
     await message.answer(
-        f"Результат зафиксирован:\n<b>{html.escape(message.text)}</b>\n\n"
-        "Что дальше с проектом?",
-        reply_markup=project_kb(),
+        f"Отлично. Результат сохранён:\n<b>{html.escape(message.text)}</b>",
+        reply_markup=project_goal_saved_kb(),
     )
 
 
@@ -317,11 +381,85 @@ async def proj_steps(callback: CallbackQuery, session: AsyncSession, state: FSMC
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="in_progress"
     )
-    await state.set_state(ThoughtStates.waiting_for_first_step)
+    await callback.answer()
+
+    thinking = await callback.message.answer("Раскладываю на шаги…")
+    result = await generate_project_steps(thought.raw_text, thought.project_goal)
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
+
+    if result is None:
+        # Fallback: просим пользователя написать шаги самому.
+        await state.set_state(ThoughtStates.waiting_for_project_steps)
+        await callback.message.answer(
+            "Напиши первый конкретный шаг или несколько шагов одним сообщением."
+        )
+        return
+
+    # Сразу фиксируем шаги и параметры календаря, чтобы кнопка
+    # «Добавить первый шаг в календарь» работала без отдельного сохранения.
+    thought.suggested_calendar_title = result.calendar_title
+    thought.suggested_duration_minutes = result.duration_minutes
+    await ThoughtRepository.set_project_steps(
+        session,
+        thought,
+        steps=result.steps,
+        first_step=result.first_step,
+        project_goal=result.project_goal,
+    )
+    await state.update_data(proposed_steps=result.steps)
     await callback.message.answer(
-        "Напиши первый конкретный шаг (или несколько шагов) одним сообщением."
+        thought_processor.format_project_steps(result.steps, result.project_goal),
+        reply_markup=project_steps_kb(),
+    )
+
+
+@router.callback_query(F.data == "steps:save")
+async def steps_save(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await ThoughtRepository.set_category_status(
+        session, thought, category="project", status="project_saved"
+    )
+    await callback.message.answer("Мини-проект сохранён.", reply_markup=after_kb())
+    await state.set_state(None)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "steps:edit")
+async def steps_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(ThoughtStates.waiting_for_project_steps)
+    await callback.message.answer(
+        "Напиши шаги одним сообщением. Каждый шаг можно писать с новой строки."
     )
     await callback.answer()
+
+
+@router.message(ThoughtStates.waiting_for_project_steps, F.text)
+async def on_project_steps(
+    message: Message, session: AsyncSession, state: FSMContext
+) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await message.answer(NOT_FOUND, reply_markup=after_kb())
+        await state.set_state(None)
+        return
+    steps = [s.strip() for s in message.text.splitlines() if s.strip()]
+    if not steps:
+        steps = [message.text.strip()]
+    first_step = steps[0]
+    await ThoughtRepository.set_project_steps(
+        session, thought, steps=steps, first_step=first_step
+    )
+    await state.set_state(None)
+    await message.answer(
+        thought_processor.format_project_steps(steps, thought.project_goal),
+        reply_markup=project_steps_kb(),
+    )
 
 
 @router.callback_query(F.data == "proj:calendar")
