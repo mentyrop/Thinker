@@ -17,5 +17,14 @@ services:
       timeout: 5s
       retries: 5
 
+  bot:
+    build: .
+    container_name: thinker_bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   thinker_bot_pgdata:
