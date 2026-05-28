@@ -80,6 +80,18 @@ def research_kb() -> InlineKeyboardMarkup:
     kb.button(text="🤝 Назначить встречу", callback_data="research:meeting")
     kb.button(text="👥 Делегировать поиск фактов", callback_data="research:delegate")
     kb.button(text="📅 Добавить исследование в календарь", callback_data="research:calendar")
+    kb.button(text="💭 Подумать позже", callback_data="research:later")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def project_kb() -> InlineKeyboardMarkup:
+    """Опции для мысли-проекта."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎯 Сформулировать результат", callback_data="proj:outcome")
+    kb.button(text="🪜 Разбить на шаги", callback_data="proj:steps")
+    kb.button(text="📅 Добавить первый шаг в календарь", callback_data="proj:calendar")
+    kb.button(text="💭 Подумать позже", callback_data="proj:later")
     kb.adjust(1)
     return kb.as_markup()
 

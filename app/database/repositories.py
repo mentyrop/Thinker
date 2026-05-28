@@ -60,6 +60,8 @@ class ThoughtRepository:
     ) -> Thought:
         thought.summary = analysis.summary
         thought.type = analysis.type
+        thought.recommended_route = analysis.recommended_route
+        thought.confidence = analysis.confidence
         thought.actionable = analysis.actionable
         thought.can_delegate = analysis.can_delegate
         thought.calendar_candidate = analysis.calendar_candidate
@@ -93,6 +95,15 @@ class ThoughtRepository:
         session: AsyncSession, thought: Thought, first_step: str
     ) -> Thought:
         thought.suggested_first_step = first_step
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
+    async def set_summary(
+        session: AsyncSession, thought: Thought, summary: str
+    ) -> Thought:
+        thought.summary = summary
         await session.commit()
         await session.refresh(thought)
         return thought

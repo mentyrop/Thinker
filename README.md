@@ -85,14 +85,23 @@ python -m app.main
 
 `app/services/llm_service.py` отправляет мысль в `/chat/completions` с
 системным промптом, который требует вернуть **только** JSON по фиксированной
-схеме (`summary`, `type`, `actionable`, `can_delegate`, `calendar_candidate`,
-`needs_first_step`, `needs_research`, `suggested_first_step`,
-`suggested_calendar_title`, `suggested_duration_minutes`,
-`suggested_note_category`, `user_question_next`).
+схеме (`summary`, `type`, `recommended_route`, `confidence`, `actionable`,
+`can_delegate`, `calendar_candidate`, `needs_research`, `suggested_first_step`,
+`suggested_calendar_title`, `suggested_duration_minutes`, `user_question_next`).
+
+Ключевое поле — `recommended_route` (smart routing): `empty_thought`,
+`delegate`, `calendar`, `project`, `research`, `think_later` или
+`ask_actionable`. Вместо того чтобы задавать все вопросы подряд, бот по этому
+полю сразу предлагает ОДИН контекстный сценарий. Если `confidence < 0.5`,
+маршрут принудительно понижается до `ask_actionable` — тогда запускается
+классическая цепочка вопросов («Можем ли мы повлиять?» → …). Полную цепочку
+также можно запустить вручную кнопкой «Нет, разобрать дальше».
 
 Ответ валидируется через pydantic-модель `ThoughtAnalysis`. Если JSON
-невалиден, не приходит или API недоступен — используется fallback, поэтому бот
-никогда не падает из-за LLM. Результат сохраняется в колонку `llm_json` (JSONB).
+невалиден, не приходит или API недоступен — используется fallback
+(`recommended_route = ask_actionable`), поэтому бот никогда не падает из-за
+LLM. Результат сохраняется в колонки `recommended_route`, `confidence` и
+`llm_json` (JSONB).
 
 ## 7. Как работает Google Calendar link
 

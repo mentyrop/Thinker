@@ -11,3 +11,5 @@ class ThoughtStates(StatesGroup):
     waiting_for_calendar_datetime = State()
     # Ждём, пока пользователь сам напишет первый шаг
     waiting_for_first_step = State()
+    # Ждём формулировку результата проекта
+    waiting_for_project_outcome = State()

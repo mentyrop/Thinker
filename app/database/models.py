@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -55,6 +56,8 @@ class Thought(Base):
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recommended_route: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     category: Mapped[str] = mapped_column(
         String(50), default="journal", server_default="journal", nullable=False
     )
