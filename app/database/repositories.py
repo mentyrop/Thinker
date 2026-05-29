@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import CalendarEvent, Thought, User
@@ -53,6 +53,54 @@ class ThoughtRepository:
     @staticmethod
     async def get(session: AsyncSession, thought_id: int) -> Thought | None:
         return await session.get(Thought, thought_id)
+
+    @staticmethod
+    async def get_owned(
+        session: AsyncSession, thought_id: int, user_id: int
+    ) -> Thought | None:
+        """Достаёт мысль ТОЛЬКО если она принадлежит этому пользователю
+        и не удалена. Защищает от открытия чужой мысли по id."""
+        result = await session.execute(
+            select(Thought).where(
+                Thought.id == thought_id,
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_user_thoughts(
+        session: AsyncSession, user_id: int, limit: int = 10, offset: int = 0
+    ) -> list[Thought]:
+        result = await session.execute(
+            select(Thought)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+            )
+            .order_by(Thought.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def count_for_user(session: AsyncSession, user_id: int) -> int:
+        result = await session.execute(
+            select(func.count())
+            .select_from(Thought)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+            )
+        )
+        return int(result.scalar_one())
+
+    @staticmethod
+    async def soft_delete(session: AsyncSession, thought: Thought) -> None:
+        thought.is_deleted = True
+        await session.commit()
 
     @staticmethod
     async def apply_analysis(
@@ -148,7 +196,10 @@ class ThoughtRepository:
     ) -> list[Thought]:
         result = await session.execute(
             select(Thought)
-            .where(Thought.user_id == user_id)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+            )
             .order_by(Thought.created_at.desc())
             .limit(limit)
         )
@@ -163,6 +214,7 @@ class ThoughtRepository:
             .where(
                 Thought.user_id == user_id,
                 Thought.category == "thoughts_to_finish",
+                Thought.is_deleted.is_(False),
             )
             .order_by(Thought.created_at.desc())
             .limit(limit)
@@ -201,7 +253,10 @@ class CalendarEventRepository:
         result = await session.execute(
             select(CalendarEvent)
             .join(Thought, CalendarEvent.thought_id == Thought.id)
-            .where(Thought.user_id == user_id)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+            )
             .order_by(CalendarEvent.start_datetime.desc())
             .limit(limit)
         )

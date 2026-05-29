@@ -28,6 +28,8 @@ from app.bot.keyboards.inline import (
     project_kb,
     project_steps_kb,
     research_kb,
+    thought_card_kb,
+    thought_delete_confirm_kb,
     yes_no_kb,
 )
 from app.bot.states.thought_states import ThoughtStates
@@ -71,6 +73,27 @@ async def _get_thought(session: AsyncSession, state: FSMContext) -> Thought | No
     if thought_id is None:
         return None
     return await ThoughtRepository.get(session, thought_id)
+
+
+async def _owned_from_cb(
+    callback: CallbackQuery, session: AsyncSession
+) -> Thought | None:
+    """Достаёт мысль по id из callback_data, проверяя владельца.
+
+    Возвращает None, если id некорректен или мысль чужая/удалена —
+    нельзя открыть чужую мысль по id.
+    """
+    try:
+        thought_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return None
+    user = await UserRepository.get_or_create(
+        session,
+        telegram_id=callback.from_user.id,
+        username=callback.from_user.username,
+        first_name=callback.from_user.first_name,
+    )
+    return await ThoughtRepository.get_owned(session, thought_id, user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -283,18 +306,16 @@ async def rt_later_no(callback: CallbackQuery, state: FSMContext) -> None:
 # Ручной ввод используется только как правка («Изменить»/«Редактировать»)
 # или fallback, если LLM недоступна / вернула невалидный JSON.
 # ---------------------------------------------------------------------------
-@router.callback_query(F.data == "proj:outcome")
-async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
-    thought = await _get_thought(session, state)
-    if not thought:
-        await callback.answer(NOT_FOUND, show_alert=True)
-        return
+async def _propose_goal(
+    message: Message, session: AsyncSession, thought: Thought, state: FSMContext
+) -> None:
+    """LLM предлагает результат для текущей мысли. Обновляет ту же запись."""
+    await state.update_data(thought_id=thought.id)
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="in_progress"
     )
-    await callback.answer()
 
-    thinking = await callback.message.answer("Формулирую результат…")
+    thinking = await message.answer("Формулирую результат…")
     result = await generate_project_goal(thought.raw_text)
     try:
         await thinking.delete()
@@ -304,7 +325,7 @@ async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FS
     if result is None:
         # Fallback: просим пользователя сформулировать самому.
         await state.set_state(ThoughtStates.waiting_for_project_outcome)
-        await callback.message.answer(
+        await message.answer(
             "Опиши одним сообщением, какой результат ты хочешь получить."
         )
         return
@@ -314,12 +335,63 @@ async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FS
         proposed_criteria=result.success_criteria,
         proposed_title=result.short_title,
     )
-    await callback.message.answer(
+    await message.answer(
         thought_processor.format_project_goal(
             result.project_goal, result.success_criteria, result.short_title
         ),
         reply_markup=project_goal_kb(),
     )
+
+
+async def _propose_steps(
+    message: Message, session: AsyncSession, thought: Thought, state: FSMContext
+) -> None:
+    """LLM раскладывает текущую мысль на шаги. Обновляет ту же запись."""
+    await state.update_data(thought_id=thought.id)
+    await ThoughtRepository.set_category_status(
+        session, thought, category="project", status="in_progress"
+    )
+
+    thinking = await message.answer("Раскладываю на шаги…")
+    result = await generate_project_steps(thought.raw_text, thought.project_goal)
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
+
+    if result is None:
+        await state.set_state(ThoughtStates.waiting_for_project_steps)
+        await message.answer(
+            "Напиши первый конкретный шаг или несколько шагов одним сообщением."
+        )
+        return
+
+    # Сразу фиксируем шаги и параметры календаря, чтобы кнопка
+    # «Добавить первый шаг в календарь» работала без отдельного сохранения.
+    thought.suggested_calendar_title = result.calendar_title
+    thought.suggested_duration_minutes = result.duration_minutes
+    await ThoughtRepository.set_project_steps(
+        session,
+        thought,
+        steps=result.steps,
+        first_step=result.first_step,
+        project_goal=result.project_goal,
+    )
+    await state.update_data(proposed_steps=result.steps)
+    await message.answer(
+        thought_processor.format_project_steps(result.steps, result.project_goal),
+        reply_markup=project_steps_kb(),
+    )
+
+
+@router.callback_query(F.data == "proj:outcome")
+async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await callback.answer()
+    await _propose_goal(callback.message, session, thought, state)
 
 
 @router.callback_query(F.data == "goal:ok")
@@ -378,42 +450,8 @@ async def proj_steps(callback: CallbackQuery, session: AsyncSession, state: FSMC
     if not thought:
         await callback.answer(NOT_FOUND, show_alert=True)
         return
-    await ThoughtRepository.set_category_status(
-        session, thought, category="project", status="in_progress"
-    )
     await callback.answer()
-
-    thinking = await callback.message.answer("Раскладываю на шаги…")
-    result = await generate_project_steps(thought.raw_text, thought.project_goal)
-    try:
-        await thinking.delete()
-    except Exception:
-        pass
-
-    if result is None:
-        # Fallback: просим пользователя написать шаги самому.
-        await state.set_state(ThoughtStates.waiting_for_project_steps)
-        await callback.message.answer(
-            "Напиши первый конкретный шаг или несколько шагов одним сообщением."
-        )
-        return
-
-    # Сразу фиксируем шаги и параметры календаря, чтобы кнопка
-    # «Добавить первый шаг в календарь» работала без отдельного сохранения.
-    thought.suggested_calendar_title = result.calendar_title
-    thought.suggested_duration_minutes = result.duration_minutes
-    await ThoughtRepository.set_project_steps(
-        session,
-        thought,
-        steps=result.steps,
-        first_step=result.first_step,
-        project_goal=result.project_goal,
-    )
-    await state.update_data(proposed_steps=result.steps)
-    await callback.message.answer(
-        thought_processor.format_project_steps(result.steps, result.project_goal),
-        reply_markup=project_steps_kb(),
-    )
+    await _propose_steps(callback.message, session, thought, state)
 
 
 @router.callback_query(F.data == "steps:save")
@@ -588,6 +626,10 @@ async def on_calendar_datetime(
         end_datetime=end,
         google_calendar_url=gcal_url,
     )
+    # Обновляем СУЩЕСТВУЮЩУЮ мысль, дубль не создаём.
+    await ThoughtRepository.set_category_status(
+        session, thought, category="calendar", status="calendar_created"
+    )
 
     await message.answer(
         f"Событие запланировано на {start.strftime('%d.%m.%Y %H:%M')} "
@@ -709,18 +751,181 @@ async def research_later(callback: CallbackQuery, session: AsyncSession, state: 
 
 
 @router.callback_query(F.data.in_({"research:read", "research:call", "research:meeting"}))
-async def research_simple(callback: CallbackQuery, state: FSMContext) -> None:
+async def research_simple(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     labels = {
         "research:read": "Погуглить / почитать",
         "research:call": "Позвонить человеку",
         "research:meeting": "Назначить встречу",
     }
     label = labels.get(callback.data, "Исследование")
+    thought = await _get_thought(session, state)
+    if thought:
+        await ThoughtRepository.set_category_status(
+            session, thought, category="research", status="research_needed"
+        )
     await callback.message.answer(
-        f"Отметил план: <b>{label}</b>. Мысль сохранена в раздел «Исследование».",
+        f"Зафиксировал первый способ сбора фактов: <b>{label}</b>.\n"
+        "Мысль сохранена в раздел «Исследование».",
         reply_markup=after_kb(),
     )
     await state.set_state(None)
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Карточка мысли из журнала. Все действия работают с СУЩЕСТВУЮЩЕЙ мыслью
+# по thought_id и обновляют её — новые Thought тут не создаются.
+# ---------------------------------------------------------------------------
+async def _show_card(message: Message, thought: Thought, edit: bool = False) -> None:
+    text = thought_processor.format_thought_card(thought)
+    kb = thought_card_kb(thought.id)
+    if edit:
+        try:
+            await message.edit_text(text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("thought_open:"))
+async def thought_open(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await state.set_state(None)
+    await state.update_data(thought_id=thought.id)
+    await _show_card(callback.message, thought, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_goal:"))
+async def thought_goal(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await callback.answer()
+    await _propose_goal(callback.message, session, thought, state)
+
+
+@router.callback_query(F.data.startswith("thought_steps:"))
+async def thought_steps(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await callback.answer()
+    await _propose_steps(callback.message, session, thought, state)
+
+
+@router.callback_query(F.data.startswith("thought_calendar:"))
+async def thought_calendar(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await state.update_data(thought_id=thought.id)
+    await _ask_calendar_datetime(callback.message, session, thought, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_research:"))
+async def thought_research(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await state.update_data(thought_id=thought.id)
+    await ThoughtRepository.set_category_status(
+        session, thought, category="research", status="research_needed"
+    )
+    await callback.message.answer(
+        "Как лучше собрать факты?", reply_markup=research_kb()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_delegate:"))
+async def thought_delegate(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await state.update_data(thought_id=thought.id)
+    await ThoughtRepository.set_category_status(
+        session, thought, category="delegate", status="delegation_ready"
+    )
+    text = thought_processor.build_delegation_text(thought)
+    share_url = thought_processor.build_telegram_share_url(text)
+    await callback.message.answer(
+        "Готовый текст для делегирования:\n\n" f"<code>{html.escape(text)}</code>",
+        reply_markup=delegation_kb(share_url, thought_id=thought.id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_think_later:"))
+async def thought_think_later(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await state.update_data(thought_id=thought.id)
+    await _save_think_later(callback.message, session, thought, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_close:"))
+async def thought_close(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await ThoughtRepository.set_category_status(session, thought, status="closed")
+    await callback.message.answer("Мысль закрыта.", reply_markup=after_kb())
+    await state.set_state(None)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_delete_confirm:"))
+async def thought_delete_confirm(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await ThoughtRepository.soft_delete(session, thought)
+    await state.set_state(None)
+    try:
+        await callback.message.edit_text("Мысль удалена.", reply_markup=after_kb())
+    except Exception:
+        await callback.message.answer("Мысль удалена.", reply_markup=after_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("thought_delete_cancel:"))
+async def thought_delete_cancel(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await _show_card(callback.message, thought, edit=True)
+    await callback.answer()
+
+
+# Важно: общий префикс — этот хендлер регистрируем ПОСЛЕ confirm/cancel,
+# чтобы "thought_delete:" не перехватывал "thought_delete_confirm:".
+@router.callback_query(F.data.startswith("thought_delete:"))
+async def thought_delete(callback: CallbackQuery, session: AsyncSession) -> None:
+    thought = await _owned_from_cb(callback, session)
+    if not thought:
+        await callback.answer("Мысль не найдена.", show_alert=True)
+        return
+    await callback.message.answer(
+        "Удалить эту мысль из журнала?",
+        reply_markup=thought_delete_confirm_kb(thought.id),
+    )
     await callback.answer()
 
 

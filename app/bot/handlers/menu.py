@@ -9,7 +9,12 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.start import HELP_TEXT
-from app.bot.keyboards.inline import main_menu_kb, reanalyze_kb, to_menu_kb
+from app.bot.keyboards.inline import (
+    journal_list_kb,
+    main_menu_kb,
+    reanalyze_kb,
+    to_menu_kb,
+)
 from app.database.repositories import (
     CalendarEventRepository,
     ThoughtRepository,
@@ -18,13 +23,8 @@ from app.database.repositories import (
 
 router = Router(name="menu")
 
-CATEGORY_LABELS = {
-    "journal": "журнал",
-    "delegate": "делегирование",
-    "calendar": "календарь",
-    "research": "исследование",
-    "thoughts_to_finish": "додумать",
-}
+JOURNAL_PAGE_SIZE = 10
+JOURNAL_HEADER = "📓 <b>Журнал мыслей</b>\n\nВыберите мысль, чтобы открыть:"
 
 
 async def _user_id(session: AsyncSession, tg_user) -> int:
@@ -41,22 +41,32 @@ async def _send_menu(message: Message) -> None:
     await message.answer("Главное меню:", reply_markup=main_menu_kb())
 
 
-async def _send_journal(message: Message, session: AsyncSession, tg_user) -> None:
+async def _send_journal(
+    message: Message,
+    session: AsyncSession,
+    tg_user,
+    page: int = 0,
+    edit: bool = False,
+) -> None:
     uid = await _user_id(session, tg_user)
-    thoughts = await ThoughtRepository.last_for_user(session, uid, limit=10)
-    if not thoughts:
+    total = await ThoughtRepository.count_for_user(session, uid)
+    if total == 0:
         await message.answer("Журнал пуст. Напиши первую мысль!", reply_markup=to_menu_kb())
         return
-    lines = ["<b>📓 Последние мысли:</b>\n"]
-    for t in thoughts:
-        text = t.summary or t.raw_text
-        cat = CATEGORY_LABELS.get(t.category, t.category)
-        lines.append(
-            f"• {t.created_at.strftime('%d.%m %H:%M')} — "
-            f"{html.escape(text[:120])}\n"
-            f"  <i>{cat} · {t.status}</i>"
-        )
-    await message.answer("\n".join(lines), reply_markup=to_menu_kb())
+    # Защита от выхода за границы (например, после удаления последней мысли).
+    max_page = max(0, (total - 1) // JOURNAL_PAGE_SIZE)
+    page = max(0, min(page, max_page))
+    thoughts = await ThoughtRepository.get_user_thoughts(
+        session, uid, limit=JOURNAL_PAGE_SIZE, offset=page * JOURNAL_PAGE_SIZE
+    )
+    kb = journal_list_kb(thoughts, page, total, JOURNAL_PAGE_SIZE)
+    if edit:
+        try:
+            await message.edit_text(JOURNAL_HEADER, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    await message.answer(JOURNAL_HEADER, reply_markup=kb)
 
 
 async def _send_to_finish(message: Message, session: AsyncSession, tg_user) -> None:
@@ -103,7 +113,19 @@ async def cb_home(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "menu:journal")
 async def cb_journal(callback: CallbackQuery, session: AsyncSession) -> None:
-    await _send_journal(callback.message, session, callback.from_user)
+    await _send_journal(callback.message, session, callback.from_user, page=0)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("journal_page:"))
+async def cb_journal_page(callback: CallbackQuery, session: AsyncSession) -> None:
+    try:
+        page = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        page = 0
+    await _send_journal(
+        callback.message, session, callback.from_user, page=page, edit=True
+    )
     await callback.answer()
 
 

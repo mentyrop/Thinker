@@ -4,6 +4,9 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.database.models import Thought
+from app.services.thought_processor import journal_button_label
+
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
@@ -47,10 +50,12 @@ def yes_no_kb(step: str, yes_text: str = "Да", no_text: str = "Нет") -> Inl
     return kb.as_markup()
 
 
-def delegation_kb(share_url: str) -> InlineKeyboardMarkup:
+def delegation_kb(share_url: str, thought_id: int | None = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📤 Отправить в Telegram", url=share_url)
     kb.button(text="📋 Скопировать текст вручную", callback_data="delegate:copy")
+    if thought_id is not None:
+        kb.button(text="⬅️ Назад к мысли", callback_data=f"thought_open:{thought_id}")
     kb.button(text="🏠 В меню", callback_data="menu:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -142,4 +147,67 @@ def reanalyze_kb(thought_id: int) -> InlineKeyboardMarkup:
 def to_menu_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏠 В меню", callback_data="menu:home")
+    return kb.as_markup()
+
+
+# --------------------------------------------------------------------------- #
+# Интерактивный журнал мыслей                                                 #
+# --------------------------------------------------------------------------- #
+def journal_list_kb(
+    thoughts: list[Thought], page: int, total: int, page_size: int = 10
+) -> InlineKeyboardMarkup:
+    """Список мыслей кнопками + пагинация.
+
+    page — текущая страница (с 0). callback мыслей: thought_open:<id>,
+    страниц: journal_page:<page>.
+    """
+    kb = InlineKeyboardBuilder()
+    for i, t in enumerate(thoughts, start=page * page_size + 1):
+        kb.button(
+            text=journal_button_label(t, i),
+            callback_data=f"thought_open:{t.id}",
+        )
+    kb.adjust(1)  # каждая мысль — на своей строке
+
+    # Пагинация
+    has_prev = page > 0
+    has_next = (page + 1) * page_size < total
+    nav = InlineKeyboardBuilder()
+    if has_prev:
+        nav.button(text="◀️ Предыдущие", callback_data=f"journal_page:{page - 1}")
+    if has_next:
+        nav.button(text="▶️ Следующие", callback_data=f"journal_page:{page + 1}")
+    if has_prev or has_next:
+        nav.adjust(2)
+        kb.attach(nav)
+
+    tail = InlineKeyboardBuilder()
+    tail.button(text="🏠 В меню", callback_data="menu:home")
+    tail.adjust(1)
+    kb.attach(tail)
+    return kb.as_markup()
+
+
+def thought_card_kb(thought_id: int) -> InlineKeyboardMarkup:
+    """Действия над конкретной мыслью. Все callback несут thought_id."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎯 Сформулировать результат", callback_data=f"thought_goal:{thought_id}")
+    kb.button(text="🪜 Разбить на шаги", callback_data=f"thought_steps:{thought_id}")
+    kb.button(text="📅 Добавить первый шаг в календарь", callback_data=f"thought_calendar:{thought_id}")
+    kb.button(text="🔎 Исследовать / собрать факты", callback_data=f"thought_research:{thought_id}")
+    kb.button(text="🤝 Делегировать", callback_data=f"thought_delegate:{thought_id}")
+    kb.button(text="💭 Перенести в «Мысли додумать»", callback_data=f"thought_think_later:{thought_id}")
+    kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{thought_id}")
+    kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{thought_id}")
+    kb.button(text="⬅️ Назад к журналу", callback_data="journal_page:0")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def thought_delete_confirm_kb(thought_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Да, удалить", callback_data=f"thought_delete_confirm:{thought_id}")
+    kb.button(text="Отмена", callback_data=f"thought_delete_cancel:{thought_id}")
+    kb.adjust(2)
     return kb.as_markup()

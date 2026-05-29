@@ -10,6 +10,129 @@ from urllib.parse import quote
 
 from app.database.models import Thought
 
+# Технические значения → человекочитаемые русские.
+CATEGORY_LABELS = {
+    "journal": "Журнал",
+    "project": "Мини-проект",
+    "calendar": "Календарь",
+    "research": "Исследование",
+    "thoughts_to_finish": "Мысли додумать",
+    "delegate": "Делегирование",
+}
+
+STATUS_LABELS = {
+    "new": "новая",
+    "in_progress": "в работе",
+    "project_saved": "сохранён",
+    "calendar_pending": "ожидает выбора даты",
+    "calendar_created": "добавлено в календарь",
+    "research_needed": "нужны факты",
+    "think_later": "отложено",
+    "empty_closed": "закрыто как неподконтрольное",
+    "delegation_ready": "готово к делегированию",
+    "closed": "закрыто",
+}
+
+TYPE_LABELS = {
+    "task": "Задача",
+    "worry": "Тревога",
+    "idea": "Идея",
+    "reflection": "Размышление",
+    "project": "Мини-проект",
+    "fact_search": "Поиск фактов",
+    "other": "Другое",
+}
+
+# Лимит Telegram-сообщения 4096 символов. Держим запас под разметку.
+MAX_MESSAGE_LEN = 3500
+
+
+def format_category(category: str | None) -> str:
+    if not category:
+        return "—"
+    return CATEGORY_LABELS.get(category, category)
+
+
+def format_status(status: str | None) -> str:
+    if not status:
+        return "—"
+    return STATUS_LABELS.get(status, status)
+
+
+def format_type(type_: str | None) -> str:
+    if not type_:
+        return "—"
+    return TYPE_LABELS.get(type_, type_)
+
+
+def journal_line(thought: Thought) -> str:
+    """Короткая подпись для текстового представления (если нужно)."""
+    text = thought.summary or thought.raw_text
+    return (
+        f"{thought.created_at.strftime('%d.%m %H:%M')} — {text[:80]}\n"
+        f"{format_category(thought.category)} · {format_status(thought.status)}"
+    )
+
+
+def journal_button_label(thought: Thought, index: int) -> str:
+    """Подпись кнопки в списке журнала (коротко, до ~60 символов)."""
+    text = (thought.summary or thought.raw_text or "Мысль").strip()
+    text = " ".join(text.split())
+    if len(text) > 55:
+        text = text[:54].rstrip() + "…"
+    return f"{index}. {text}"
+
+
+def _numbered(items: list[str]) -> str:
+    return "\n".join(f"{i}. {html.escape(s)}" for i, s in enumerate(items, 1))
+
+
+def format_thought_card(thought: Thought) -> str:
+    """Карточка мысли. Показывает только заполненные блоки.
+
+    Длинные поля при необходимости укорачиваются, чтобы не превышать
+    лимит Telegram-сообщения.
+    """
+    raw = (thought.raw_text or "").strip()
+    if len(raw) > 1500:
+        raw = raw[:1500].rstrip() + "…"
+
+    parts: list[str] = ["📌 <b>Мысль</b>", ""]
+    parts.append("<b>Исходный текст:</b>")
+    parts.append(html.escape(raw))
+
+    if thought.summary:
+        parts += ["", "<b>Кратко:</b>", html.escape(thought.summary)]
+
+    parts += ["", "<b>Тип:</b>", format_type(thought.type)]
+    parts += ["", "<b>Статус:</b>", format_status(thought.status)]
+    parts += ["", "<b>Категория:</b>", format_category(thought.category)]
+
+    if thought.suggested_first_step:
+        parts += [
+            "",
+            "<b>Предложенный первый шаг:</b>",
+            html.escape(thought.suggested_first_step),
+        ]
+
+    if thought.project_goal:
+        parts += ["", "<b>Цель:</b>", html.escape(thought.project_goal)]
+
+    if thought.project_steps:
+        parts += ["", "<b>Шаги:</b>", _numbered(list(thought.project_steps))]
+
+    if thought.success_criteria:
+        parts += [
+            "",
+            "<b>Критерии готовности:</b>",
+            _numbered(list(thought.success_criteria)),
+        ]
+
+    text = "\n".join(parts)
+    if len(text) > MAX_MESSAGE_LEN:
+        text = text[:MAX_MESSAGE_LEN].rstrip() + "\n…"
+    return text
+
 
 def format_project_goal(
     project_goal: str,
