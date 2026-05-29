@@ -29,10 +29,21 @@ STATUS_LABELS = {
     "calendar_pending": "ожидает выбора даты",
     "calendar_created": "добавлено в календарь",
     "research_needed": "нужны факты",
+    "research_plan_generated": "план предложен",
+    "research_saved": "сохранено",
     "think_later": "отложено",
+    "clarification_needed": "нужно уточнение",
     "empty_closed": "закрыто как неподконтрольное",
     "delegation_ready": "готово к делегированию",
     "closed": "закрыто",
+}
+
+# Заголовок карточки по категории мысли.
+CARD_HEADERS = {
+    "project": "🧩 <b>Мини-проект</b>",
+    "research": "🔎 <b>Исследование</b>",
+    "delegate": "🤝 <b>Делегирование</b>",
+    "thoughts_to_finish": "💭 <b>Мысль додумать</b>",
 }
 
 TYPE_LABELS = {
@@ -99,7 +110,8 @@ def format_thought_card(thought: Thought) -> str:
     if len(raw) > 1500:
         raw = raw[:1500].rstrip() + "…"
 
-    header = "🧩 <b>Мини-проект</b>" if thought.category == "project" else "📌 <b>Мысль</b>"
+    category = thought.category
+    header = CARD_HEADERS.get(category, "📌 <b>Мысль</b>")
     parts: list[str] = [header, ""]
     parts.append("<b>Исходный текст:</b>")
     parts.append(html.escape(raw))
@@ -109,34 +121,39 @@ def format_thought_card(thought: Thought) -> str:
 
     parts += ["", "<b>Тип:</b>", format_type(thought.type)]
     parts += ["", "<b>Статус:</b>", format_status(thought.status)]
-    parts += ["", "<b>Категория:</b>", format_category(thought.category)]
+    parts += ["", "<b>Категория:</b>", format_category(category)]
 
-    if thought.research_method:
-        parts += [
-            "",
-            "<b>Способ сбора фактов:</b>",
-            html.escape(thought.research_method),
-        ]
-
-    if thought.suggested_first_step:
-        parts += [
-            "",
-            "<b>Предложенный первый шаг:</b>",
-            html.escape(thought.suggested_first_step),
-        ]
-
-    if thought.project_goal:
-        parts += ["", "<b>Цель:</b>", html.escape(thought.project_goal)]
-
-    if thought.project_steps:
-        parts += ["", "<b>Шаги:</b>", _numbered(list(thought.project_steps))]
-
-    if thought.success_criteria:
-        parts += [
-            "",
-            "<b>Критерии готовности:</b>",
-            _numbered(list(thought.success_criteria)),
-        ]
+    if category == "research":
+        # Карточка исследования: цель, план, первый шаг.
+        if thought.research_goal:
+            parts += ["", "<b>Цель исследования:</b>", html.escape(thought.research_goal)]
+        if thought.research_steps:
+            parts += ["", "<b>План исследования:</b>", _numbered(list(thought.research_steps))]
+        first = thought.first_research_step or thought.suggested_first_step
+        if first:
+            parts += ["", "<b>Первый шаг:</b>", html.escape(first)]
+        if thought.research_method and not thought.research_steps:
+            parts += ["", "<b>Способ сбора фактов:</b>", html.escape(thought.research_method)]
+    elif category == "delegate":
+        # Карточка делегирования: готовый текст для отправки.
+        if thought.delegation_text:
+            parts += ["", "<b>Текст для отправки:</b>", html.escape(thought.delegation_text)]
+        elif thought.suggested_first_step:
+            parts += ["", "<b>Предложенный первый шаг:</b>", html.escape(thought.suggested_first_step)]
+    elif category == "project":
+        # Карточка мини-проекта: первый шаг, цель, шаги, критерии.
+        if thought.suggested_first_step:
+            parts += ["", "<b>Предложенный первый шаг:</b>", html.escape(thought.suggested_first_step)]
+        if thought.project_goal:
+            parts += ["", "<b>Цель:</b>", html.escape(thought.project_goal)]
+        if thought.project_steps:
+            parts += ["", "<b>Шаги:</b>", _numbered(list(thought.project_steps))]
+        if thought.success_criteria:
+            parts += ["", "<b>Критерии готовности:</b>", _numbered(list(thought.success_criteria))]
+    else:
+        # Журнал / мысли додумать / прочее: первый шаг, если есть.
+        if thought.suggested_first_step:
+            parts += ["", "<b>Предложенный первый шаг:</b>", html.escape(thought.suggested_first_step)]
 
     text = "\n".join(parts)
     if len(text) > MAX_MESSAGE_LEN:
@@ -187,11 +204,43 @@ def format_project_steps(
     return "\n".join(lines)
 
 
+def format_research_plan(
+    research_goal: str, steps: list[str], first_step: str | None = None
+) -> str:
+    """Сообщение с предложенным планом исследования."""
+    lines = [
+        "Похоже, для этой мысли нужно собрать больше фактов.",
+        "",
+        "Я предложил план исследования:",
+        "",
+        "<b>Цель:</b>",
+        html.escape(research_goal),
+        "",
+        "<b>Шаги:</b>",
+    ]
+    for i, step in enumerate(steps, 1):
+        lines.append(f"{i}. {html.escape(step)}")
+    fs = first_step or (steps[0] if steps else None)
+    if fs:
+        lines += ["", "<b>Первый шаг:</b>", html.escape(fs)]
+    lines += ["", "Сохраняем этот план?"]
+    return "\n".join(lines)
+
+
 def build_delegation_text(thought: Thought) -> str:
-    """Готовый текст для передачи задачи другому человеку."""
-    summary = thought.summary or thought.raw_text
-    first_step = thought.suggested_first_step or "—"
-    return f"Задача: {summary}\nПервый шаг: {first_step}"
+    """Запасной (без LLM) человеческий текст для передачи задачи.
+
+    Не использует формат «Задача:/Первый шаг:» — это готовое к отправке
+    вежливое сообщение. Основной путь генерирует текст через LLM.
+    """
+    if thought.delegation_text:
+        return thought.delegation_text
+    summary = (thought.summary or thought.raw_text or "").strip()
+    summary = summary[0].lower() + summary[1:] if summary else summary
+    return (
+        f"Привет! Можешь, пожалуйста, помочь вот с этим: {summary} "
+        "Если получится — дай знать, пожалуйста."
+    )
 
 
 def build_telegram_share_url(text: str) -> str:

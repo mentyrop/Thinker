@@ -157,13 +157,60 @@ class ThoughtRepository:
         return thought
 
     @staticmethod
+    async def append_clarification(
+        session: AsyncSession, thought: Thought, clarification: str
+    ) -> Thought:
+        """Дописывает уточнение к исходному тексту мысли (без дубля записи)."""
+        clarification = clarification.strip()
+        if clarification:
+            base = (thought.raw_text or "").rstrip()
+            thought.raw_text = f"{base}\n\nУточнение: {clarification}"
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
     async def set_research(
         session: AsyncSession, thought: Thought, method: str
     ) -> Thought:
-        """Фиксирует выбранный способ сбора фактов для мысли-исследования."""
+        """Фиксирует выбранный способ сбора фактов для мысли-исследования.
+
+        Fallback-путь, когда LLM не смогла сгенерировать план исследования.
+        """
         thought.category = "research"
         thought.status = "research_needed"
         thought.research_method = method
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
+    async def set_research_plan(
+        session: AsyncSession,
+        thought: Thought,
+        research_goal: str,
+        steps: list[str],
+        first_step: str | None = None,
+    ) -> Thought:
+        """Сохраняет AI-план исследования. Делает мысль исследованием."""
+        thought.category = "research"
+        thought.status = "research_saved"
+        thought.research_goal = research_goal
+        thought.research_steps = steps
+        if first_step is not None:
+            thought.first_research_step = first_step
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
+    async def set_delegation(
+        session: AsyncSession, thought: Thought, delegation_text: str
+    ) -> Thought:
+        """Сохраняет готовое сообщение для делегирования."""
+        thought.category = "delegate"
+        thought.status = "delegation_ready"
+        thought.delegation_text = delegation_text
         await session.commit()
         await session.refresh(thought)
         return thought
@@ -259,6 +306,55 @@ class ThoughtRepository:
         return int(result.scalar_one())
 
     @staticmethod
+    def _is_research_clause():
+        """Мысль — исследование, если помечена research ИЛИ есть план/цель."""
+        return or_(
+            Thought.category == "research",
+            Thought.research_goal.is_not(None),
+            Thought.research_steps.is_not(None),
+        )
+
+    @staticmethod
+    async def research_for_user(
+        session: AsyncSession, user_id: int, limit: int = 10
+    ) -> list[Thought]:
+        result = await session.execute(
+            select(Thought)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+                ThoughtRepository._is_research_clause(),
+            )
+            .order_by(Thought.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    def _is_delegate_clause():
+        """Мысль — делегирование, если помечена delegate ИЛИ есть текст."""
+        return or_(
+            Thought.category == "delegate",
+            Thought.delegation_text.is_not(None),
+        )
+
+    @staticmethod
+    async def delegate_for_user(
+        session: AsyncSession, user_id: int, limit: int = 10
+    ) -> list[Thought]:
+        result = await session.execute(
+            select(Thought)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+                ThoughtRepository._is_delegate_clause(),
+            )
+            .order_by(Thought.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def last_to_finish(
         session: AsyncSession, user_id: int, limit: int = 10
     ) -> list[Thought]:
@@ -269,6 +365,7 @@ class ThoughtRepository:
                 or_(
                     Thought.category == "thoughts_to_finish",
                     Thought.status == "think_later",
+                    Thought.status == "clarification_needed",
                 ),
                 Thought.is_deleted.is_(False),
             )

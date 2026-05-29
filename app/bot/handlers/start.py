@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.keyboards.inline import start_kb
+from app.bot.keyboards.inline import help_kb, start_kb
 from app.bot.keyboards.reply import main_reply_kb
 from app.database.repositories import UserRepository
 
@@ -25,6 +25,15 @@ HELP_TEXT = (
     "Если нельзя — оставляем в журнале. Если можно — превращаем её в "
     "делегирование, календарное действие, исследование или мысль для "
     "дальнейшей проработки.\n\n"
+    "<b>Разделы продукта</b>\n"
+    "📓 <b>Журнал мыслей</b> — все сохранённые мысли.\n"
+    "🧩 <b>Мини-проекты</b> — мысли с целью и шагами.\n"
+    "🔎 <b>Исследования</b> — мысли, где нужно собрать факты; "
+    "бот предлагает план исследования.\n"
+    "🤝 <b>Делегирование</b> — задачи, для которых готовится сообщение "
+    "другому человеку.\n"
+    "📅 <b>Календарь / Запланированные</b> — действия с датой и временем.\n"
+    "💭 <b>Мысли додумать</b> — то, к чему стоит вернуться позже.\n\n"
     "<b>Дерево вопросов</b>\n"
     "1. Можно ли повлиять на эту мысль?\n"
     "2. Можно ли делегировать задачу?\n"
@@ -50,4 +59,4 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT)
+    await message.answer(HELP_TEXT, reply_markup=help_kb())

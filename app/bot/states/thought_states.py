@@ -19,3 +19,5 @@ class ThoughtStates(StatesGroup):
     editing_goal = State()
     # Редактирование шагов мини-проекта из карточки
     editing_steps = State()
+    # Ждём ответ пользователя на уточняющие вопросы («Уточнить мысль»)
+    waiting_for_clarification = State()

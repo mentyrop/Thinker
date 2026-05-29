@@ -4,20 +4,28 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from app.database.models import Thought
+from app.database.models import CalendarEvent, Thought
 from app.services.thought_processor import journal_button_label
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
+    """Единое главное меню. Используется в /start и во всех «🏠 В меню»."""
     kb = InlineKeyboardBuilder()
     kb.button(text="📝 Новая мысль", callback_data="menu:new")
     kb.button(text="📓 Журнал мыслей", callback_data="menu:journal")
-    kb.button(text="💭 Мысли додумать", callback_data="menu:to_finish")
     kb.button(text="🧩 Мини-проекты", callback_data="menu:projects")
+    kb.button(text="🔎 Исследования", callback_data="menu:research")
+    kb.button(text="🤝 Делегирование", callback_data="menu:delegate")
     kb.button(text="📅 Календарь / Запланированные", callback_data="menu:calendar")
+    kb.button(text="💭 Мысли додумать", callback_data="menu:to_finish")
     kb.button(text="ℹ️ Помощь", callback_data="menu:help")
     kb.adjust(1)
     return kb.as_markup()
+
+
+# Единый публичный псевдоним — используем его как «одну функцию меню».
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return main_menu_kb()
 
 
 def start_kb() -> InlineKeyboardMarkup:
@@ -46,12 +54,22 @@ def yes_no_kb(step: str, yes_text: str = "Да", no_text: str = "Нет") -> Inl
     return kb.as_markup()
 
 
+def delegate_confirm_kb() -> InlineKeyboardMarkup:
+    """Подтверждение подготовки сообщения для делегирования."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, подготовить", callback_data="delegate:prepare")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def delegation_kb(share_url: str, thought_id: int | None = None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📤 Отправить в Telegram", url=share_url)
-    kb.button(text="📋 Скопировать текст вручную", callback_data="delegate:copy")
+    kb.button(text="📋 Показать текст для копирования", callback_data="delegate:copy")
     if thought_id is not None:
-        kb.button(text="⬅️ Назад к мысли", callback_data=f"thought_open:{thought_id}")
+        kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{thought_id}")
+        kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{thought_id}")
     kb.button(text="🏠 В меню", callback_data="menu:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -122,11 +140,38 @@ def project_steps_kb() -> InlineKeyboardMarkup:
 
 
 def calendar_route_kb() -> InlineKeyboardMarkup:
-    """Маршрут calendar: явная дата/время в мысли — сразу предлагаем календарь."""
+    """Маршрут calendar: явная дата/время в мысли — сразу предлагаем календарь.
+
+    По требованию UX показываем только подтверждение и выход в меню,
+    без «разобрать иначе» / «подумать позже».
+    """
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Да, добавить", callback_data="cal_route:yes")
-    kb.button(text="🔎 Разобрать иначе", callback_data="cal_route:other")
-    kb.button(text="💭 Подумать позже", callback_data="cal_route:later")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def research_plan_kb() -> InlineKeyboardMarkup:
+    """AI-план исследования: подтверждение сохранения / пересборка / календарь."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Сохранить исследование", callback_data="research_plan:save")
+    kb.button(text="🔄 Пересобрать план", callback_data="research_plan:replan")
+    kb.button(
+        text="📅 Добавить первый шаг в календарь",
+        callback_data="research_plan:calendar",
+    )
+    kb.button(text="💭 Подумать позже", callback_data="research_plan:later")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def help_kb() -> InlineKeyboardMarkup:
+    """Кнопки под разделом «Помощь»."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📝 Новая мысль", callback_data="menu:new")
+    kb.button(text="📓 Журнал мыслей", callback_data="menu:journal")
     kb.button(text="🏠 В меню", callback_data="menu:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -261,9 +306,9 @@ def thought_card_kb(
 
     # --- Сохранённый мини-проект (или любой проект с результатом/шагами) ---
     if category == "project":
+        kb.button(text="🔄 Сформулировать иначе", callback_data=f"thought_goal:{tid}")
+        kb.button(text="🔄 Пересобрать шаги", callback_data=f"thought_steps:{tid}")
         cal_button()
-        kb.button(text="✏️ Изменить результат", callback_data=f"thought_goal_edit:{tid}")
-        kb.button(text="✏️ Редактировать шаги", callback_data=f"thought_steps_edit:{tid}")
         kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{tid}")
         kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{tid}")
         kb.button(text="🏠 В меню", callback_data="menu:home")
@@ -272,8 +317,8 @@ def thought_card_kb(
 
     # --- Исследование ---
     if category == "research":
-        kb.button(text="🔁 Изменить способ сбора фактов", callback_data=f"thought_research:{tid}")
-        kb.button(text="📅 Добавить исследование в календарь", callback_data=f"thought_calendar:{tid}")
+        kb.button(text="🔄 Пересобрать план", callback_data=f"thought_research:{tid}")
+        cal_button()
         kb.button(text="💭 Перенести в «Мысли додумать»", callback_data=f"thought_think_later:{tid}")
         kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{tid}")
         kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{tid}")
@@ -283,8 +328,7 @@ def thought_card_kb(
 
     # --- Делегирование ---
     if category == "delegate":
-        kb.button(text="📤 Открыть текст делегирования", callback_data=f"thought_delegate:{tid}")
-        kb.button(text="📅 Добавить напоминание в календарь", callback_data=f"thought_calendar:{tid}")
+        kb.button(text="📤 Открыть текст для отправки", callback_data=f"thought_delegate:{tid}")
         kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{tid}")
         kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{tid}")
         kb.button(text="🏠 В меню", callback_data="menu:home")
@@ -292,11 +336,11 @@ def thought_card_kb(
         return kb.as_markup()
 
     # --- Мысли додумать (интерактивная карточка) ---
-    if category == "thoughts_to_finish" or status == "think_later":
-        kb.button(text="🔄 Разобрать снова", callback_data=f"reanalyze:{tid}")
-        kb.button(text="🎯 Сформулировать результат", callback_data=f"thought_goal:{tid}")
-        kb.button(text="🔎 Исследовать / собрать факты", callback_data=f"thought_research:{tid}")
-        cal_button()
+    if category == "thoughts_to_finish" or status in ("think_later", "clarification_needed"):
+        kb.button(text="🔄 Уточнить мысль", callback_data=f"thought_clarify:{tid}")
+        kb.button(text="🎯 Помочь сформулировать результат", callback_data=f"thought_goal:{tid}")
+        kb.button(text="🔎 Найти, каких фактов не хватает", callback_data=f"thought_research:{tid}")
+        kb.button(text="📅 Выбрать первый шаг", callback_data=f"thought_calendar:{tid}")
         kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{tid}")
         kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{tid}")
         kb.button(text="🏠 В меню", callback_data="menu:home")
@@ -352,6 +396,21 @@ def project_saved_kb(thought_id: int) -> InlineKeyboardMarkup:
 
 def think_later_list_kb(thoughts: list[Thought]) -> InlineKeyboardMarkup:
     """Интерактивный список «Мысли додумать». callback: thought_open:<id>."""
+    return _section_list_kb(thoughts)
+
+
+def research_list_kb(thoughts: list[Thought]) -> InlineKeyboardMarkup:
+    """Интерактивный список «Исследования». callback: thought_open:<id>."""
+    return _section_list_kb(thoughts)
+
+
+def delegate_list_kb(thoughts: list[Thought]) -> InlineKeyboardMarkup:
+    """Интерактивный список «Делегирование». callback: thought_open:<id>."""
+    return _section_list_kb(thoughts)
+
+
+def _section_list_kb(thoughts: list[Thought]) -> InlineKeyboardMarkup:
+    """Общий построитель списка раздела: мысли кнопками + журнал/меню."""
     kb = InlineKeyboardBuilder()
     for i, t in enumerate(thoughts, start=1):
         kb.button(
@@ -361,6 +420,26 @@ def think_later_list_kb(thoughts: list[Thought]) -> InlineKeyboardMarkup:
     kb.adjust(1)
     tail = InlineKeyboardBuilder()
     tail.button(text="📓 Журнал мыслей", callback_data="menu:journal")
+    tail.button(text="🏠 В меню", callback_data="menu:home")
+    tail.adjust(1)
+    kb.attach(tail)
+    return kb.as_markup()
+
+
+def calendar_list_kb(events: list[CalendarEvent]) -> InlineKeyboardMarkup:
+    """Список запланированных действий. Каждая кнопка открывает связанную мысль."""
+    kb = InlineKeyboardBuilder()
+    for i, e in enumerate(events, start=1):
+        when = e.start_datetime.strftime("%d.%m %H:%M")
+        title = " ".join((e.title or "Действие").split())
+        if len(title) > 40:
+            title = title[:39].rstrip() + "…"
+        kb.button(
+            text=f"{i}. {title} — {when}",
+            callback_data=f"thought_open:{e.thought_id}",
+        )
+    kb.adjust(1)
+    tail = InlineKeyboardBuilder()
     tail.button(text="🏠 В меню", callback_data="menu:home")
     tail.adjust(1)
     kb.attach(tail)

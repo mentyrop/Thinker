@@ -85,6 +85,15 @@ class Thought(Base):
     project_steps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     success_criteria: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
+    # Исследования: AI-план (цель, шаги, первый шаг). Заполняется маршрутом
+    # research; делает мысль видимой в разделе «Исследования».
+    research_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research_steps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    first_research_step: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Делегирование: готовое человеческое сообщение адресату.
+    delegation_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     llm_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Soft delete: удалённые мысли скрываются из журнала, но не теряются.

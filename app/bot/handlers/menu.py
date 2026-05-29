@@ -1,8 +1,6 @@
 """Меню и разделы: журнал, мысли додумать, календарь, помощь."""
 from __future__ import annotations
 
-import html
-
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -10,9 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.start import HELP_TEXT
 from app.bot.keyboards.inline import (
+    calendar_list_kb,
+    delegate_list_kb,
+    help_kb,
     journal_list_kb,
     main_menu_kb,
     projects_list_kb,
+    research_list_kb,
     think_later_list_kb,
     to_menu_kb,
 )
@@ -27,6 +29,12 @@ router = Router(name="menu")
 JOURNAL_PAGE_SIZE = 10
 JOURNAL_HEADER = "📓 <b>Журнал мыслей</b>\n\nВыберите мысль, чтобы открыть:"
 PROJECTS_HEADER = "🧩 <b>Мини-проекты</b>\n\nВыберите проект, чтобы открыть:"
+RESEARCH_HEADER = "🔎 <b>Исследования</b>\n\nВыберите исследование, чтобы открыть:"
+DELEGATE_HEADER = "🤝 <b>Делегирование</b>\n\nВыберите задачу, чтобы открыть:"
+CALENDAR_HEADER = (
+    "📅 <b>Календарь / Запланированные</b>\n\n"
+    "Выберите действие, чтобы открыть связанную мысль:"
+)
 TO_FINISH_HEADER = "💭 <b>Мысли додумать</b>\n\nВыберите мысль, чтобы открыть:"
 
 
@@ -96,6 +104,32 @@ async def _send_projects(message: Message, session: AsyncSession, tg_user) -> No
     await message.answer(PROJECTS_HEADER, reply_markup=projects_list_kb(thoughts))
 
 
+async def _send_research(message: Message, session: AsyncSession, tg_user) -> None:
+    uid = await _user_id(session, tg_user)
+    thoughts = await ThoughtRepository.research_for_user(session, uid, limit=10)
+    if not thoughts:
+        await message.answer(
+            "Исследований пока нет.\n"
+            "Открой мысль и выбери «Найти, каких фактов не хватает».",
+            reply_markup=to_menu_kb(),
+        )
+        return
+    await message.answer(RESEARCH_HEADER, reply_markup=research_list_kb(thoughts))
+
+
+async def _send_delegate(message: Message, session: AsyncSession, tg_user) -> None:
+    uid = await _user_id(session, tg_user)
+    thoughts = await ThoughtRepository.delegate_for_user(session, uid, limit=10)
+    if not thoughts:
+        await message.answer(
+            "Делегированных задач пока нет.\n"
+            "Открой мысль и выбери «Делегировать».",
+            reply_markup=to_menu_kb(),
+        )
+        return
+    await message.answer(DELEGATE_HEADER, reply_markup=delegate_list_kb(thoughts))
+
+
 async def _send_calendar(message: Message, session: AsyncSession, tg_user) -> None:
     uid = await _user_id(session, tg_user)
     events = await CalendarEventRepository.upcoming_for_user(session, uid, limit=10)
@@ -104,13 +138,7 @@ async def _send_calendar(message: Message, session: AsyncSession, tg_user) -> No
             "Запланированных действий пока нет.", reply_markup=to_menu_kb()
         )
         return
-    lines = ["<b>📅 Мои запланированные действия:</b>\n"]
-    for e in events:
-        lines.append(
-            f"• {e.start_datetime.strftime('%d.%m.%Y %H:%M')} — "
-            f"{html.escape(e.title[:120])}"
-        )
-    await message.answer("\n".join(lines), reply_markup=to_menu_kb())
+    await message.answer(CALENDAR_HEADER, reply_markup=calendar_list_kb(events))
 
 
 # --- callbacks ---
@@ -151,6 +179,18 @@ async def cb_projects(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "menu:research")
+async def cb_research(callback: CallbackQuery, session: AsyncSession) -> None:
+    await _send_research(callback.message, session, callback.from_user)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:delegate")
+async def cb_delegate(callback: CallbackQuery, session: AsyncSession) -> None:
+    await _send_delegate(callback.message, session, callback.from_user)
+    await callback.answer()
+
+
 @router.callback_query(F.data == "menu:calendar")
 async def cb_calendar(callback: CallbackQuery, session: AsyncSession) -> None:
     await _send_calendar(callback.message, session, callback.from_user)
@@ -159,7 +199,7 @@ async def cb_calendar(callback: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data == "menu:help")
 async def cb_help(callback: CallbackQuery) -> None:
-    await callback.message.answer(HELP_TEXT, reply_markup=to_menu_kb())
+    await callback.message.answer(HELP_TEXT, reply_markup=help_kb())
     await callback.answer()
 
 
@@ -179,6 +219,16 @@ async def reply_projects(message: Message, session: AsyncSession) -> None:
     await _send_projects(message, session, message.from_user)
 
 
+@router.message(F.text == "🔎 Исследования")
+async def reply_research(message: Message, session: AsyncSession) -> None:
+    await _send_research(message, session, message.from_user)
+
+
+@router.message(F.text == "🤝 Делегирование")
+async def reply_delegate(message: Message, session: AsyncSession) -> None:
+    await _send_delegate(message, session, message.from_user)
+
+
 @router.message(F.text == "📅 Календарь / Запланированные")
 async def reply_calendar(message: Message, session: AsyncSession) -> None:
     await _send_calendar(message, session, message.from_user)
@@ -186,4 +236,4 @@ async def reply_calendar(message: Message, session: AsyncSession) -> None:
 
 @router.message(F.text == "ℹ️ Помощь")
 async def reply_help(message: Message) -> None:
-    await message.answer(HELP_TEXT)
+    await message.answer(HELP_TEXT, reply_markup=help_kb())
