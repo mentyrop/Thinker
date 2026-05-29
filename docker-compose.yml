@@ -5,10 +5,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан в .env}
       POSTGRES_DB: thinker_bot
-    ports:
-      - "5432:5432"
+    # Порт НАРУЖУ не пробрасываем — БД доступна только внутри docker-сети
+    # (сервис bot ходит к ней по имени `postgres`). Это убирает атаки из интернета.
+    # Если нужен доступ к БД с самого сервера для отладки — раскомментируй
+    # строки ниже: слушать ТОЛЬКО localhost (127.0.0.1), а не 0.0.0.0.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     volumes:
       - thinker_bot_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +29,7 @@ services:
     # Внутри docker-сети БД доступна по имени сервиса `postgres`, а не localhost.
     # Перебиваем DATABASE_URL из .env, чтобы запуск работал из коробки.
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/thinker_bot
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/thinker_bot
     depends_on:
       postgres:
         condition: service_healthy
