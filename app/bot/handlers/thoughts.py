@@ -23,11 +23,11 @@ from app.bot.keyboards.inline import (
     after_kb,
     calendar_result_kb,
     calendar_route_kb,
+    clarify_kb,
     delegate_confirm_kb,
     delegation_kb,
     direction_kb,
     first_step_kb,
-    goal_confirmed_kb,
     goal_edited_kb,
     project_goal_kb,
     project_saved_kb,
@@ -158,12 +158,11 @@ async def _do_delegation(
         text = thought_processor.build_delegation_text(thought)
 
     await ThoughtRepository.set_delegation(session, thought, text)
-    share_url = thought_processor.build_telegram_share_url(text)
     await message.answer(
         "🤝 <b>Делегирование</b>\n\n"
         "Готовое сообщение — можно отправить как есть:\n\n"
         f"<code>{html.escape(text)}</code>",
-        reply_markup=delegation_kb(share_url, thought_id=thought.id),
+        reply_markup=delegation_kb(thought_id=thought.id),
     )
     await state.set_state(None)
 
@@ -199,6 +198,31 @@ async def _save_think_later(
     await state.set_state(None)
 
 
+VAGUE_CLARIFY_TEXT = (
+    "Эта мысль пока слишком общая. Чтобы я смог разложить её на действие, "
+    "нужно чуть уточнить.\n\n"
+    "Попробуй ответить на один из вопросов:\n\n"
+    "1. Что именно тебя не устраивает?\n"
+    "2. Какой результат ты хочешь получить?\n"
+    "3. Что должно измениться в идеале?\n"
+    "4. Какой самый маленький шаг можно сделать, чтобы разобраться?\n\n"
+    "Напиши уточнение одним сообщением."
+)
+
+
+async def _start_clarification(
+    message: Message, session: AsyncSession, thought: Thought, state: FSMContext
+) -> None:
+    """Запускает сценарий уточнения слишком общей мысли. Ответ пользователя
+    дописывается к той же мысли и переанализируется (без создания дубля)."""
+    await ThoughtRepository.set_category_status(
+        session, thought, category="thoughts_to_finish", status="clarification_needed"
+    )
+    await state.update_data(thought_id=thought.id)
+    await state.set_state(ThoughtStates.waiting_for_clarification)
+    await message.answer(VAGUE_CLARIFY_TEXT, reply_markup=clarify_kb())
+
+
 async def _show_direction_menu(message: Message, state: FSMContext) -> None:
     """Меню «разобрать иначе» вместо старой линейной анкеты.
 
@@ -217,13 +241,29 @@ async def _show_direction_menu(message: Message, state: FSMContext) -> None:
 # Точка входа: анализ + выбор маршрута
 # ---------------------------------------------------------------------------
 async def _route_thought(
-    message: Message, session: AsyncSession, thought: Thought, state: FSMContext
+    message: Message,
+    session: AsyncSession,
+    thought: Thought,
+    state: FSMContext,
+    allow_clarify: bool = True,
 ) -> None:
-    """Показывает резюме и направляет в ОДИН контекстный сценарий."""
+    """Показывает резюме и направляет в ОДИН контекстный сценарий.
+
+    allow_clarify=False отключает сценарий уточнения — используется после
+    того, как пользователь уже уточнил мысль, чтобы не зациклиться.
+    """
     await state.set_state(None)
     await state.update_data(thought_id=thought.id)
 
     route = thought.recommended_route or "ask_actionable"
+
+    # Слишком общая мысль (или маршрут «подумать позже») → не навязываем
+    # мини-проект, а просим уточнить. Календарь — исключение: дата уже явна.
+    if allow_clarify and route != "calendar" and (
+        route == "think_later" or thought_processor.is_vague_thought(thought.raw_text)
+    ):
+        await _start_clarification(message, session, thought, state)
+        return
 
     if route == "project":
         # Строгий сценарий мини-проекта: сразу предлагаем результат (LLM).
@@ -249,11 +289,6 @@ async def _route_thought(
     elif route == "research":
         # Бот сам предлагает план исследования (LLM); fallback — выбор способа.
         await _propose_research(message, session, thought, state)
-    elif route == "think_later":
-        await message.answer(
-            "Пока неясно, что с этим делать. Сохранить в «Мысли додумать»?",
-            reply_markup=yes_no_kb("rt_later", "Да", "Нет, разобрать иначе"),
-        )
     else:  # ask_actionable — LLM не уверена, запускаем классическую анкету
         await message.answer(Q1, reply_markup=yes_no_kb("q1"))
 
@@ -458,9 +493,17 @@ async def dir_later(callback: CallbackQuery, session: AsyncSession, state: FSMCo
 # или fallback, если LLM недоступна / вернула невалидный JSON.
 # ---------------------------------------------------------------------------
 async def _propose_goal(
-    message: Message, session: AsyncSession, thought: Thought, state: FSMContext
+    message: Message,
+    session: AsyncSession,
+    thought: Thought,
+    state: FSMContext,
+    regenerated: bool = False,
 ) -> None:
-    """LLM предлагает результат для текущей мысли. Обновляет ту же запись."""
+    """LLM предлагает результат для текущей мысли. Обновляет ту же запись.
+
+    Ручного ввода результата в MVP нет: если LLM недоступна, формулируем
+    результат автоматически из summary/raw_text и сразу показываем кнопки.
+    """
     await state.update_data(thought_id=thought.id)
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="in_progress"
@@ -474,30 +517,30 @@ async def _propose_goal(
         pass
 
     if result is None:
-        # Fallback: просим пользователя сформулировать самому.
-        await state.set_state(ThoughtStates.waiting_for_project_outcome)
-        await message.answer(
-            "Опиши одним сообщением, какой результат ты хочешь получить."
-        )
-        return
+        # Fallback без ручного ввода: берём краткую формулировку мысли.
+        goal = (thought.summary or thought.raw_text or "").strip()
+    else:
+        goal = result.project_goal
 
-    await state.update_data(
-        proposed_goal=result.project_goal,
-        proposed_criteria=result.success_criteria,
-        proposed_title=result.short_title,
-    )
+    await state.update_data(proposed_goal=goal)
     await message.answer(
-        thought_processor.format_project_goal(
-            result.project_goal, result.success_criteria, result.short_title
-        ),
+        thought_processor.format_project_goal(goal, regenerated=regenerated),
         reply_markup=project_goal_kb(),
     )
 
 
 async def _propose_steps(
-    message: Message, session: AsyncSession, thought: Thought, state: FSMContext
+    message: Message,
+    session: AsyncSession,
+    thought: Thought,
+    state: FSMContext,
+    intro: str | None = None,
 ) -> None:
-    """LLM раскладывает текущую мысль на шаги. Обновляет ту же запись."""
+    """LLM раскладывает текущую мысль на шаги. Обновляет ту же запись.
+
+    Ручного ввода шагов в MVP нет: если LLM недоступна, формируем один шаг
+    автоматически (первый шаг / summary) и сразу показываем кнопки.
+    """
     await state.update_data(thought_id=thought.id)
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="in_progress"
@@ -511,29 +554,34 @@ async def _propose_steps(
         pass
 
     if result is None:
-        await state.set_state(ThoughtStates.waiting_for_project_steps)
-        await message.answer(
-            "Напиши первый конкретный шаг или несколько шагов одним сообщением."
-        )
-        return
+        # Fallback без ручного ввода: один автоматический шаг.
+        steps = [
+            (thought.suggested_first_step or thought.summary or thought.raw_text or "").strip()
+        ]
+        first_step = steps[0]
+        project_goal = thought.project_goal
+    else:
+        steps = result.steps
+        first_step = result.first_step
+        project_goal = result.project_goal
+        # Параметры календаря фиксируем сразу, чтобы кнопка
+        # «Добавить первый шаг в календарь» работала без доп. сохранения.
+        thought.suggested_calendar_title = result.calendar_title
+        thought.suggested_duration_minutes = result.duration_minutes
 
-    # Сразу фиксируем шаги и параметры календаря, чтобы кнопка
-    # «Добавить первый шаг в календарь» работала без отдельного сохранения.
-    thought.suggested_calendar_title = result.calendar_title
-    thought.suggested_duration_minutes = result.duration_minutes
     await ThoughtRepository.set_project_steps(
         session,
         thought,
-        steps=result.steps,
-        first_step=result.first_step,
-        project_goal=result.project_goal,
+        steps=steps,
+        first_step=first_step,
+        project_goal=project_goal,
     )
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="steps_generated"
     )
-    await state.update_data(proposed_steps=result.steps)
+    await state.update_data(proposed_steps=steps)
     await message.answer(
-        thought_processor.format_project_steps(result.steps, result.project_goal),
+        thought_processor.format_project_steps(steps, project_goal, intro=intro),
         reply_markup=project_steps_kb(),
     )
 
@@ -593,6 +641,8 @@ async def proj_outcome(callback: CallbackQuery, session: AsyncSession, state: FS
 
 @router.callback_query(F.data == "goal:ok")
 async def goal_ok(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    """Результат подтверждён → сохраняем и СРАЗУ раскладываем на шаги.
+    Промежуточного экрана «Разбить на шаги» больше нет."""
     thought = await _get_thought(session, state)
     if not thought:
         await callback.answer(NOT_FOUND, show_alert=True)
@@ -602,34 +652,35 @@ async def goal_ok(callback: CallbackQuery, session: AsyncSession, state: FSMCont
     if not goal:
         await callback.answer("Нет предложенного результата.", show_alert=True)
         return
-    await ThoughtRepository.set_project_goal(
+    await ThoughtRepository.set_project_goal(session, thought, project_goal=goal)
+    await callback.answer()
+    await _propose_steps(
+        callback.message,
         session,
         thought,
-        project_goal=goal,
-        success_criteria=data.get("proposed_criteria"),
-        project_title=data.get("proposed_title"),
+        state,
+        intro="Отлично. Результат зафиксирован.",
     )
-    await ThoughtRepository.set_category_status(
-        session, thought, category="project", status="goal_confirmed"
-    )
-    await callback.message.answer(
-        "Отлично. Результат зафиксирован.\n\nТеперь разложим проект на шаги?",
-        reply_markup=goal_confirmed_kb(),
-    )
-    await callback.answer()
 
 
-@router.callback_query(F.data == "goal:edit")
-async def goal_edit(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ThoughtStates.waiting_for_project_outcome)
-    await callback.message.answer("Напиши результат своими словами одним сообщением.")
+@router.callback_query(F.data == "goal:regen")
+async def goal_regen(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    """«Сформулировать иначе»: только перегенерируем результат для той же
+    мысли — без повторного анализа, смены маршрута и создания дублей."""
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
     await callback.answer()
+    await _propose_goal(callback.message, session, thought, state, regenerated=True)
 
 
 @router.message(ThoughtStates.waiting_for_project_outcome, F.text)
 async def on_project_outcome(
     message: Message, session: AsyncSession, state: FSMContext
 ) -> None:
+    """Совместимость: ручной ввод результата в MVP UI не вызывается, но если
+    состояние всё же активно — сохраняем результат и сразу раскладываем шаги."""
     thought = await _get_thought(session, state)
     if not thought:
         await message.answer(NOT_FOUND, reply_markup=after_kb())
@@ -638,14 +689,9 @@ async def on_project_outcome(
     await ThoughtRepository.set_project_goal(
         session, thought, project_goal=message.text.strip()
     )
-    await ThoughtRepository.set_category_status(
-        session, thought, category="project", status="goal_confirmed"
-    )
     await state.set_state(None)
-    await message.answer(
-        f"Отлично. Результат зафиксирован:\n<b>{html.escape(message.text.strip())}</b>"
-        "\n\nТеперь разложим проект на шаги?",
-        reply_markup=goal_confirmed_kb(),
+    await _propose_steps(
+        message, session, thought, state, intro="Отлично. Результат зафиксирован."
     )
 
 
@@ -949,14 +995,17 @@ async def research_delegate(callback: CallbackQuery, session: AsyncSession, stat
     if not thought:
         await callback.answer(NOT_FOUND, show_alert=True)
         return
-    await ThoughtRepository.set_category_status(
-        session, thought, category="delegate", status="delegation_ready"
+    topic = thought.summary or thought.raw_text
+    text = (
+        "Привет! Можешь, пожалуйста, помочь собрать факты по вопросу: "
+        f"{topic} Если получится — дай знать, пожалуйста."
     )
-    text = f"Нужно собрать факты по вопросу: {thought.summary or thought.raw_text}"
-    share_url = thought_processor.build_telegram_share_url(text)
+    await ThoughtRepository.set_delegation(session, thought, text)
     await callback.message.answer(
-        "Текст для делегирования поиска фактов:\n\n" f"<code>{html.escape(text)}</code>",
-        reply_markup=delegation_kb(share_url),
+        "🤝 <b>Делегирование</b>\n\n"
+        "Готовое сообщение — можно отправить как есть:\n\n"
+        f"<code>{html.escape(text)}</code>",
+        reply_markup=delegation_kb(thought_id=thought.id),
     )
     await state.set_state(None)
     await callback.answer()
@@ -1281,28 +1330,17 @@ async def thought_delegate(callback: CallbackQuery, session: AsyncSession, state
     if thought.delegation_text:
         # Уже подготовлено — просто показываем сохранённое сообщение.
         text = thought.delegation_text
-        share_url = thought_processor.build_telegram_share_url(text)
         await callback.message.answer(
             "🤝 <b>Делегирование</b>\n\n"
             "Готовое сообщение — можно отправить как есть:\n\n"
             f"<code>{html.escape(text)}</code>",
-            reply_markup=delegation_kb(share_url, thought_id=thought.id),
+            reply_markup=delegation_kb(thought_id=thought.id),
         )
         await callback.answer()
         return
     # Ещё не делегировали — генерируем сообщение через LLM.
     await callback.answer()
     await _do_delegation(callback.message, session, thought, state)
-
-
-CLARIFY_PROMPT = (
-    "Эта мысль пока слишком общая. Ответь на несколько вопросов одним "
-    "сообщением — это поможет понять, что с ней делать:\n\n"
-    "1. Что именно тебя не устраивает сейчас?\n"
-    "2. Какой результат ты бы хотел получить?\n"
-    "3. Что должно измениться, чтобы стало лучше?\n"
-    "4. Какой самый маленький шаг можно сделать уже сегодня?"
-)
 
 
 @router.callback_query(F.data.startswith("thought_clarify:"))
@@ -1313,9 +1351,17 @@ async def thought_clarify(callback: CallbackQuery, session: AsyncSession, state:
     if not thought:
         await callback.answer("Мысль не найдена.", show_alert=True)
         return
-    await state.update_data(thought_id=thought.id)
-    await state.set_state(ThoughtStates.waiting_for_clarification)
-    await callback.message.answer(CLARIFY_PROMPT)
+    await callback.answer()
+    await _start_clarification(callback.message, session, thought, state)
+
+
+@router.callback_query(F.data == "clarify:later")
+async def clarify_later(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await _save_think_later(callback.message, session, thought, state)
     await callback.answer()
 
 
@@ -1344,7 +1390,8 @@ async def on_clarification(
     except Exception:
         pass
     await state.set_state(None)
-    await _route_thought(message, session, thought, state)
+    # allow_clarify=False — пользователь уже уточнил, не зацикливаемся.
+    await _route_thought(message, session, thought, state, allow_clarify=False)
 
 
 @router.callback_query(F.data.startswith("thought_think_later:"))

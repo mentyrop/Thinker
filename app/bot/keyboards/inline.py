@@ -63,9 +63,10 @@ def delegate_confirm_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def delegation_kb(share_url: str, thought_id: int | None = None) -> InlineKeyboardMarkup:
+def delegation_kb(thought_id: int | None = None) -> InlineKeyboardMarkup:
+    """Карточка делегирования. В MVP без «Отправить в Telegram» —
+    показываем только готовый текст и кнопку копирования."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="📤 Отправить в Telegram", url=share_url)
     kb.button(text="📋 Показать текст для копирования", callback_data="delegate:copy")
     if thought_id is not None:
         kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{thought_id}")
@@ -105,22 +106,14 @@ def research_kb() -> InlineKeyboardMarkup:
 
 
 def project_goal_kb() -> InlineKeyboardMarkup:
-    """Шаг 1 строгого сценария: LLM предложила результат. Только подтверждение
-    или правка — без шагов/календаря."""
+    """Шаг 1 мини-проекта: LLM предложила результат.
+
+    Простой UX: подтвердить, переформулировать (тот же результат заново),
+    отложить или в меню. Ручного ввода результата в MVP нет.
+    """
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Подходит", callback_data="goal:ok")
-    kb.button(text="✏️ Изменить результат", callback_data="goal:edit")
-    kb.button(text="💭 Подумать позже", callback_data="proj:later")
-    kb.button(text="🏠 В меню", callback_data="menu:home")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def goal_confirmed_kb() -> InlineKeyboardMarkup:
-    """Шаг 2: результат зафиксирован — предлагаем разложить на шаги."""
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🪜 Разбить на шаги", callback_data="proj:steps")
-    kb.button(text="✏️ Изменить результат", callback_data="goal:edit")
+    kb.button(text="🔄 Сформулировать иначе", callback_data="goal:regen")
     kb.button(text="💭 Подумать позже", callback_data="proj:later")
     kb.button(text="🏠 В меню", callback_data="menu:home")
     kb.adjust(1)
@@ -128,12 +121,21 @@ def goal_confirmed_kb() -> InlineKeyboardMarkup:
 
 
 def project_steps_kb() -> InlineKeyboardMarkup:
-    """Шаг 3: LLM предложила шаги. Подтверждение сохранения — без календаря."""
+    """Шаг 2 мини-проекта: шаги сгенерированы автоматически. Сохранить
+    или переформулировать результат заново. Без ручного редактирования."""
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Да, сохранить мини-проект", callback_data="steps:save")
-    kb.button(text="✏️ Редактировать шаги", callback_data="steps:edit")
-    kb.button(text="🎯 Изменить результат", callback_data="goal:edit")
+    kb.button(text="🔄 Сформулировать результат иначе", callback_data="goal:regen")
     kb.button(text="💭 Подумать позже", callback_data="proj:later")
+    kb.button(text="🏠 В меню", callback_data="menu:home")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def clarify_kb() -> InlineKeyboardMarkup:
+    """Кнопки под просьбой уточнить слишком общую мысль."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💭 Оставить на потом", callback_data="clarify:later")
     kb.button(text="🏠 В меню", callback_data="menu:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -285,29 +287,10 @@ def thought_card_kb(
         kb.adjust(1)
         return kb.as_markup()
 
-    # --- Мини-проект: результат зафиксирован, ждём разбиения на шаги ---
-    if status == "goal_confirmed":
-        kb.button(text="🪜 Разбить на шаги", callback_data=f"thought_steps:{tid}")
-        kb.button(text="✏️ Изменить результат", callback_data=f"thought_goal_edit:{tid}")
-        kb.button(text="💭 Подумать позже", callback_data=f"thought_think_later:{tid}")
-        kb.button(text="🏠 В меню", callback_data="menu:home")
-        kb.adjust(1)
-        return kb.as_markup()
-
-    # --- Мини-проект: шаги предложены, ждём сохранения ---
-    if status == "steps_generated":
-        kb.button(text="✅ Сохранить мини-проект", callback_data=f"thought_save_project:{tid}")
-        kb.button(text="✏️ Редактировать шаги", callback_data=f"thought_steps_edit:{tid}")
-        kb.button(text="🎯 Изменить результат", callback_data=f"thought_goal_edit:{tid}")
-        kb.button(text="💭 Подумать позже", callback_data=f"thought_think_later:{tid}")
-        kb.button(text="🏠 В меню", callback_data="menu:home")
-        kb.adjust(1)
-        return kb.as_markup()
-
     # --- Сохранённый мини-проект (или любой проект с результатом/шагами) ---
-    if category == "project":
-        kb.button(text="🔄 Сформулировать иначе", callback_data=f"thought_goal:{tid}")
-        kb.button(text="🔄 Пересобрать шаги", callback_data=f"thought_steps:{tid}")
+    # Никаких «Сформулировать иначе» / «Пересобрать шаги» / «Изменить
+    # результат» / «Редактировать шаги» — карточка только показывает проект.
+    if category == "project" or status in ("goal_confirmed", "steps_generated"):
         cal_button()
         kb.button(text="✅ Закрыть мысль", callback_data=f"thought_close:{tid}")
         kb.button(text="🗑 Удалить", callback_data=f"thought_delete:{tid}")

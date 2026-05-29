@@ -141,15 +141,14 @@ def format_thought_card(thought: Thought) -> str:
         elif thought.suggested_first_step:
             parts += ["", "<b>Предложенный первый шаг:</b>", html.escape(thought.suggested_first_step)]
     elif category == "project":
-        # Карточка мини-проекта: первый шаг, цель, шаги, критерии.
-        if thought.suggested_first_step:
-            parts += ["", "<b>Предложенный первый шаг:</b>", html.escape(thought.suggested_first_step)]
+        # Карточка мини-проекта: цель, шаги, первый шаг.
+        # «Критерии готовности» и «короткое название» в MVP не показываем.
         if thought.project_goal:
             parts += ["", "<b>Цель:</b>", html.escape(thought.project_goal)]
         if thought.project_steps:
             parts += ["", "<b>Шаги:</b>", _numbered(list(thought.project_steps))]
-        if thought.success_criteria:
-            parts += ["", "<b>Критерии готовности:</b>", _numbered(list(thought.success_criteria))]
+        if thought.suggested_first_step:
+            parts += ["", "<b>Первый шаг:</b>", html.escape(thought.suggested_first_step)]
     else:
         # Журнал / мысли додумать / прочее: первый шаг, если есть.
         if thought.suggested_first_step:
@@ -161,47 +160,72 @@ def format_thought_card(thought: Thought) -> str:
     return text
 
 
-def format_project_goal(
-    project_goal: str,
-    success_criteria: list[str] | None = None,
-    title: str | None = None,
-) -> str:
-    """Сообщение с предложенной формулировкой результата проекта."""
-    lines = [
-        "Это похоже на мини-проект.",
-        "",
-        "Я сформулировал возможный результат:",
-        "",
-        f"🎯 <b>{html.escape(project_goal)}</b>",
-    ]
-    if success_criteria:
-        lines.append("")
-        lines.append("Критерии готовности:")
-        for c in success_criteria:
-            lines.append(f"• {html.escape(c)}")
-    if title:
-        lines.append("")
-        lines.append(f"Короткое название: <i>{html.escape(title)}</i>")
-    lines += ["", "Подходит?"]
-    return "\n".join(lines)
+def format_project_goal(project_goal: str, regenerated: bool = False) -> str:
+    """Первое сообщение мини-проекта: только результат + «Подходит?».
+
+    Намеренно не показываем критерии готовности и короткое название —
+    в MVP UI максимально простой: мысль → результат → подходит → шаги.
+    """
+    if regenerated:
+        intro = "Я сформулировал другой вариант результата:"
+    else:
+        intro = (
+            "Это похоже на мини-проект.\n\n"
+            "Я сформулировал возможный результат:"
+        )
+    return (
+        f"{intro}\n\n"
+        f"🎯 <b>{html.escape(project_goal)}</b>\n\n"
+        "Подходит?"
+    )
 
 
 def format_project_steps(
-    steps: list[str], project_goal: str | None = None
+    steps: list[str], project_goal: str | None = None, intro: str | None = None
 ) -> str:
-    """Сообщение с предложенными шагами проекта."""
-    lines = []
-    if project_goal:
-        lines.append(f"🎯 Результат: <b>{html.escape(project_goal)}</b>")
-        lines.append("")
+    """Сообщение с предложенными шагами проекта.
+
+    Результат уже зафиксирован, поэтому заголовок-цель не повторяем.
+    """
+    lines: list[str] = []
+    if intro:
+        lines += [intro, ""]
     lines.append("Я разложил проект на шаги:")
-    lines.append("")
     for i, step in enumerate(steps, 1):
         lines.append(f"{i}. {html.escape(step)}")
     if steps:
         lines += ["", f"Первый шаг:\n<b>{html.escape(steps[0])}</b>"]
-    lines += ["", "Всё выглядит нормально?"]
+    lines += ["", "Сохраняем мини-проект?"]
     return "\n".join(lines)
+
+
+# Маркеры слишком общей/неоформленной мысли. Если они есть — вместо
+# мини-проекта запускаем сценарий уточнения (а не навязываем результат).
+_VAGUE_MARKERS = (
+    "не понимаю",
+    "не пойму",
+    "непонятно",
+    "не понятно",
+    "не знаю, что",
+    "не знаю что",
+    "сам не знаю",
+    "сама не знаю",
+    "не уверен",
+    "не могу понять",
+    "не могу сформулировать",
+    "что именно",
+    "что-то не так",
+    "поменять подход",
+    "сменить подход",
+)
+
+
+def is_vague_thought(text: str | None) -> bool:
+    """True, если мысль слишком общая и её стоит сперва уточнить."""
+    if not text:
+        return True
+    low = text.lower()
+    return any(marker in low for marker in _VAGUE_MARKERS)
 
 
 def format_research_plan(
