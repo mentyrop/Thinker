@@ -97,7 +97,8 @@ def format_thought_card(thought: Thought) -> str:
     if len(raw) > 1500:
         raw = raw[:1500].rstrip() + "…"
 
-    parts: list[str] = ["📌 <b>Мысль</b>", ""]
+    header = "🧩 <b>Мини-проект</b>" if thought.category == "project" else "📌 <b>Мысль</b>"
+    parts: list[str] = [header, ""]
     parts.append("<b>Исходный текст:</b>")
     parts.append(html.escape(raw))
 

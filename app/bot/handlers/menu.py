@@ -12,6 +12,7 @@ from app.bot.handlers.start import HELP_TEXT
 from app.bot.keyboards.inline import (
     journal_list_kb,
     main_menu_kb,
+    projects_list_kb,
     reanalyze_kb,
     to_menu_kb,
 )
@@ -25,6 +26,7 @@ router = Router(name="menu")
 
 JOURNAL_PAGE_SIZE = 10
 JOURNAL_HEADER = "📓 <b>Журнал мыслей</b>\n\nВыберите мысль, чтобы открыть:"
+PROJECTS_HEADER = "🧩 <b>Мини-проекты</b>\n\nВыберите проект, чтобы открыть:"
 
 
 async def _user_id(session: AsyncSession, tg_user) -> int:
@@ -86,6 +88,19 @@ async def _send_to_finish(message: Message, session: AsyncSession, tg_user) -> N
         )
 
 
+async def _send_projects(message: Message, session: AsyncSession, tg_user) -> None:
+    uid = await _user_id(session, tg_user)
+    thoughts = await ThoughtRepository.projects_for_user(session, uid, limit=10)
+    if not thoughts:
+        await message.answer(
+            "Мини-проектов пока нет.\n"
+            "Открой мысль в журнале и нажми «Сохранить как мини-проект».",
+            reply_markup=to_menu_kb(),
+        )
+        return
+    await message.answer(PROJECTS_HEADER, reply_markup=projects_list_kb(thoughts))
+
+
 async def _send_calendar(message: Message, session: AsyncSession, tg_user) -> None:
     uid = await _user_id(session, tg_user)
     events = await CalendarEventRepository.upcoming_for_user(session, uid, limit=10)
@@ -132,6 +147,12 @@ async def cb_journal_page(callback: CallbackQuery, session: AsyncSession) -> Non
 @router.callback_query(F.data == "menu:to_finish")
 async def cb_to_finish(callback: CallbackQuery, session: AsyncSession) -> None:
     await _send_to_finish(callback.message, session, callback.from_user)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:projects")
+async def cb_projects(callback: CallbackQuery, session: AsyncSession) -> None:
+    await _send_projects(callback.message, session, callback.from_user)
     await callback.answer()
 
 

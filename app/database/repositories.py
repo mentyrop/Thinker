@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import CalendarEvent, Thought, User
@@ -206,6 +206,47 @@ class ThoughtRepository:
         return list(result.scalars().all())
 
     @staticmethod
+    def _is_project_clause():
+        """Мысль считается мини-проектом, если помечена как project ИЛИ
+        у неё есть сохранённый результат / шаги."""
+        return or_(
+            Thought.category == "project",
+            Thought.project_goal.is_not(None),
+            Thought.project_steps.is_not(None),
+        )
+
+    @staticmethod
+    async def projects_for_user(
+        session: AsyncSession, user_id: int, limit: int = 10
+    ) -> list[Thought]:
+        result = await session.execute(
+            select(Thought)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+                ThoughtRepository._is_project_clause(),
+            )
+            .order_by(Thought.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def count_projects_for_user(
+        session: AsyncSession, user_id: int
+    ) -> int:
+        result = await session.execute(
+            select(func.count())
+            .select_from(Thought)
+            .where(
+                Thought.user_id == user_id,
+                Thought.is_deleted.is_(False),
+                ThoughtRepository._is_project_clause(),
+            )
+        )
+        return int(result.scalar_one())
+
+    @staticmethod
     async def last_to_finish(
         session: AsyncSession, user_id: int, limit: int = 10
     ) -> list[Thought]:
@@ -245,6 +286,18 @@ class CalendarEventRepository:
         await session.commit()
         await session.refresh(event)
         return event
+
+    @staticmethod
+    async def latest_for_thought(
+        session: AsyncSession, thought_id: int
+    ) -> CalendarEvent | None:
+        result = await session.execute(
+            select(CalendarEvent)
+            .where(CalendarEvent.thought_id == thought_id)
+            .order_by(CalendarEvent.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     async def upcoming_for_user(

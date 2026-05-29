@@ -15,3 +15,7 @@ class ThoughtStates(StatesGroup):
     waiting_for_project_outcome = State()
     # Ждём шаги проекта (ручной ввод / правка)
     waiting_for_project_steps = State()
+    # Редактирование результата мини-проекта из карточки
+    editing_goal = State()
+    # Редактирование шагов мини-проекта из карточки
+    editing_steps = State()
