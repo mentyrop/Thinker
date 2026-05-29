@@ -174,6 +174,16 @@ async def reply_to_finish(message: Message, session: AsyncSession) -> None:
     await _send_to_finish(message, session, message.from_user)
 
 
+@router.message(F.text == "🧩 Мини-проекты")
+async def reply_projects(message: Message, session: AsyncSession) -> None:
+    await _send_projects(message, session, message.from_user)
+
+
+@router.message(F.text == "📅 Календарь / Запланированные")
+async def reply_calendar(message: Message, session: AsyncSession) -> None:
+    await _send_calendar(message, session, message.from_user)
+
+
 @router.message(F.text == "ℹ️ Помощь")
 async def reply_help(message: Message) -> None:
     await message.answer(HELP_TEXT)

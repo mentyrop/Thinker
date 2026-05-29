@@ -21,13 +21,8 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 
 def start_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📝 Новая мысль", callback_data="menu:new")
-    kb.button(text="📓 Журнал мыслей", callback_data="menu:journal")
-    kb.button(text="💭 Мысли додумать", callback_data="menu:to_finish")
-    kb.button(text="ℹ️ Помощь", callback_data="menu:help")
-    kb.adjust(1)
-    return kb.as_markup()
+    """Алиас единого главного меню (для совместимости со /start)."""
+    return main_menu_kb()
 
 
 def after_kb() -> InlineKeyboardMarkup:
