@@ -23,6 +23,8 @@ CATEGORY_LABELS = {
 STATUS_LABELS = {
     "new": "новая",
     "in_progress": "в работе",
+    "goal_confirmed": "результат зафиксирован",
+    "steps_generated": "шаги предложены",
     "project_saved": "сохранён",
     "calendar_pending": "ожидает выбора даты",
     "calendar_created": "добавлено в календарь",
@@ -109,6 +111,13 @@ def format_thought_card(thought: Thought) -> str:
     parts += ["", "<b>Статус:</b>", format_status(thought.status)]
     parts += ["", "<b>Категория:</b>", format_category(thought.category)]
 
+    if thought.research_method:
+        parts += [
+            "",
+            "<b>Способ сбора фактов:</b>",
+            html.escape(thought.research_method),
+        ]
+
     if thought.suggested_first_step:
         parts += [
             "",
@@ -141,7 +150,13 @@ def format_project_goal(
     title: str | None = None,
 ) -> str:
     """Сообщение с предложенной формулировкой результата проекта."""
-    lines = ["Предлагаю такой результат:", "", f"🎯 <b>{html.escape(project_goal)}</b>"]
+    lines = [
+        "Это похоже на мини-проект.",
+        "",
+        "Я сформулировал возможный результат:",
+        "",
+        f"🎯 <b>{html.escape(project_goal)}</b>",
+    ]
     if success_criteria:
         lines.append("")
         lines.append("Критерии готовности:")
@@ -150,6 +165,7 @@ def format_project_goal(
     if title:
         lines.append("")
         lines.append(f"Короткое название: <i>{html.escape(title)}</i>")
+    lines += ["", "Подходит?"]
     return "\n".join(lines)
 
 
@@ -161,10 +177,13 @@ def format_project_steps(
     if project_goal:
         lines.append(f"🎯 Результат: <b>{html.escape(project_goal)}</b>")
         lines.append("")
-    lines.append("Предлагаю такие шаги:")
+    lines.append("Я разложил проект на шаги:")
     lines.append("")
     for i, step in enumerate(steps, 1):
         lines.append(f"{i}. {html.escape(step)}")
+    if steps:
+        lines += ["", f"Первый шаг:\n<b>{html.escape(steps[0])}</b>"]
+    lines += ["", "Всё выглядит нормально?"]
     return "\n".join(lines)
 
 

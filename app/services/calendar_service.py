@@ -11,6 +11,30 @@ from urllib.parse import quote_plus, urlencode
 
 _GCAL_FMT = "%Y%m%dT%H%M%S"
 
+# Эвристики для детерминированного распознавания «календарной» мысли:
+# нужны И время (HH:MM), И дата-подобный маркер (число.месяц.год, относительный
+# день или день недели). Это позволяет боту не спрашивать «можно ли повлиять»,
+# когда в мысли явно указаны дата и время.
+_TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
+_DATE_RE = re.compile(r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b")
+_REL_DAY_RE = re.compile(r"\b(сегодня|завтра|послезавтра)\b")
+_WEEKDAY_RE = re.compile(
+    r"\b(понедельник|вторник|сред[уае]|четверг|пятниц[уае]|"
+    r"суббот[уае]|воскресень[ея])\b"
+)
+
+
+def has_explicit_datetime(text: str) -> bool:
+    """True, если в тексте есть И время, И дата/день — явный кандидат в календарь."""
+    low = text.lower()
+    has_time = bool(_TIME_RE.search(low))
+    has_date = bool(
+        _DATE_RE.search(low)
+        or _REL_DAY_RE.search(low)
+        or _WEEKDAY_RE.search(low)
+    )
+    return has_time and has_date
+
 
 def parse_datetime(text: str) -> datetime | None:
     """Парсит дату/время из свободной формы.

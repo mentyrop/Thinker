@@ -13,7 +13,7 @@ from app.bot.keyboards.inline import (
     journal_list_kb,
     main_menu_kb,
     projects_list_kb,
-    reanalyze_kb,
+    think_later_list_kb,
     to_menu_kb,
 )
 from app.database.repositories import (
@@ -27,6 +27,7 @@ router = Router(name="menu")
 JOURNAL_PAGE_SIZE = 10
 JOURNAL_HEADER = "📓 <b>Журнал мыслей</b>\n\nВыберите мысль, чтобы открыть:"
 PROJECTS_HEADER = "🧩 <b>Мини-проекты</b>\n\nВыберите проект, чтобы открыть:"
+TO_FINISH_HEADER = "💭 <b>Мысли додумать</b>\n\nВыберите мысль, чтобы открыть:"
 
 
 async def _user_id(session: AsyncSession, tg_user) -> int:
@@ -79,13 +80,7 @@ async def _send_to_finish(message: Message, session: AsyncSession, tg_user) -> N
             "В разделе «Мысли додумать» пока пусто.", reply_markup=to_menu_kb()
         )
         return
-    await message.answer("<b>💭 Мысли додумать:</b>")
-    for t in thoughts:
-        text = t.summary or t.raw_text
-        await message.answer(
-            f"• {t.created_at.strftime('%d.%m %H:%M')} — {html.escape(text[:200])}",
-            reply_markup=reanalyze_kb(t.id),
-        )
+    await message.answer(TO_FINISH_HEADER, reply_markup=think_later_list_kb(thoughts))
 
 
 async def _send_projects(message: Message, session: AsyncSession, tg_user) -> None:

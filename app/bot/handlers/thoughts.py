@@ -22,15 +22,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.inline import (
     after_kb,
     calendar_result_kb,
+    calendar_route_kb,
     delegation_kb,
+    direction_kb,
     first_step_kb,
+    goal_confirmed_kb,
     goal_edited_kb,
     project_goal_kb,
-    project_goal_saved_kb,
-    project_kb,
     project_saved_kb,
     project_steps_kb,
     research_kb,
+    research_saved_kb,
     steps_edited_kb,
     thought_card_kb,
     thought_delete_confirm_kb,
@@ -88,6 +90,18 @@ async def _has_calendar(session: AsyncSession, thought_id: int) -> bool:
     return event is not None
 
 
+# Категории, которые при добавлении в календарь становятся "calendar".
+# Проект/исследование/делегирование сохраняют свою идентичность — добавление
+# календарного события не должно стирать их категорию.
+_CALENDAR_REPLACEABLE = {None, "journal", "thoughts_to_finish", "calendar"}
+
+
+def _calendar_category(thought: Thought) -> str | None:
+    """Возвращает 'calendar', если категорию можно переопределить, иначе None
+    (None означает «не менять категорию» в set_category_status)."""
+    return "calendar" if thought.category in _CALENDAR_REPLACEABLE else None
+
+
 async def _get_thought(session: AsyncSession, state: FSMContext) -> Thought | None:
     data = await state.get_data()
     thought_id = data.get("thought_id")
@@ -143,8 +157,12 @@ async def _ask_calendar_datetime(
     prompt: str = DATETIME_HINT,
 ) -> None:
     await ThoughtRepository.set_category_status(
-        session, thought, category="calendar", status="calendar_pending"
+        session,
+        thought,
+        category=_calendar_category(thought),
+        status="calendar_pending",
     )
+    await state.update_data(thought_id=thought.id)
     await state.set_state(ThoughtStates.waiting_for_calendar_datetime)
     await message.answer(prompt)
 
@@ -162,10 +180,18 @@ async def _save_think_later(
     await state.set_state(None)
 
 
-async def _start_deep_dive(message: Message, state: FSMContext) -> None:
-    """Запускает классическую цепочку вопросов с Вопроса 1."""
+async def _show_direction_menu(message: Message, state: FSMContext) -> None:
+    """Меню «разобрать иначе» вместо старой линейной анкеты.
+
+    Старая цепочка вопросов q1→q5 теперь запускается только для маршрута
+    ask_actionable (когда LLM не уверена), а пользовательское «разобрать
+    иначе» ведёт в это контекстное меню действий.
+    """
     await state.set_state(None)
-    await message.answer(Q1, reply_markup=yes_no_kb("q1"))
+    await message.answer(
+        "Окей, разберём мысль другим способом. Что сделать?",
+        reply_markup=direction_kb(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -177,43 +203,45 @@ async def _route_thought(
     """Показывает резюме и направляет в ОДИН контекстный сценарий."""
     await state.set_state(None)
     await state.update_data(thought_id=thought.id)
-    await message.answer(thought_processor.analysis_intro(thought))
 
     route = thought.recommended_route or "ask_actionable"
 
+    if route == "project":
+        # Строгий сценарий мини-проекта: сразу предлагаем результат (LLM).
+        await _propose_goal(message, session, thought, state)
+        return
+
+    await message.answer(thought_processor.analysis_intro(thought))
+
     if route == "empty_thought":
-        await message.answer(Q1, reply_markup=yes_no_kb("q1"))
+        # Спрашиваем о подконтрольности отдельным префиксом (ea), чтобы НЕ
+        # запускать линейную анкету q1→q5.
+        await message.answer(Q1, reply_markup=yes_no_kb("ea"))
     elif route == "delegate":
         await message.answer(
             "Похоже, это можно делегировать. Хотите подготовить сообщение исполнителю?",
-            reply_markup=yes_no_kb("rt_delegate", "Да, подготовить", "Нет, разобрать дальше"),
+            reply_markup=yes_no_kb("rt_delegate", "Да, подготовить", "Нет, разобрать иначе"),
         )
     elif route == "calendar":
         await message.answer(
             "Похоже, это можно запланировать. Добавим в календарь?",
-            reply_markup=yes_no_kb("rt_calendar", "Да, добавить", "Нет, разобрать дальше"),
+            reply_markup=calendar_route_kb(),
         )
-    elif route == "project":
-        # Помечаем как проект сразу — пользователь уже внутри проектного сценария.
-        await ThoughtRepository.set_category_status(
-            session, thought, category="project", status="in_progress"
-        )
-        await message.answer("Это похоже на мини-проект.", reply_markup=project_kb())
     elif route == "research":
         # Фиксируем как исследование до выбора конкретного способа сбора фактов.
         await ThoughtRepository.set_category_status(
             session, thought, category="research", status="research_needed"
         )
         await message.answer(
-            "Похоже, для этой мысли нужно собрать больше фактов.",
+            "Похоже, для этой мысли нужно собрать больше фактов. Как лучше собрать факты?",
             reply_markup=research_kb(),
         )
     elif route == "think_later":
         await message.answer(
             "Пока неясно, что с этим делать. Сохранить в «Мысли додумать»?",
-            reply_markup=yes_no_kb("rt_later", "Да", "Нет, разобрать подробнее"),
+            reply_markup=yes_no_kb("rt_later", "Да", "Нет, разобрать иначе"),
         )
-    else:  # ask_actionable — LLM не уверена, спрашиваем сами
+    else:  # ask_actionable — LLM не уверена, запускаем классическую анкету
         await message.answer(Q1, reply_markup=yes_no_kb("q1"))
 
 
@@ -231,6 +259,13 @@ async def process_new_thought(
 
     thinking = await message.answer("Думаю над мыслью…")
     analysis = await analyze_thought(thought.raw_text)
+    # Детерминированный override: если в тексте явно есть дата И время —
+    # это календарная задача, что бы ни сказала LLM. Так бот не спрашивает
+    # «можно ли повлиять» на очевидное запланированное действие.
+    if calendar_service.has_explicit_datetime(thought.raw_text):
+        analysis.recommended_route = "calendar"
+        analysis.calendar_candidate = True
+        analysis.actionable = True
     thought = await ThoughtRepository.apply_analysis(session, thought, analysis)
     try:
         await thinking.delete()
@@ -280,15 +315,15 @@ async def rt_delegate_yes(callback: CallbackQuery, session: AsyncSession, state:
 
 @router.callback_query(F.data == "rt_delegate:no")
 async def rt_delegate_no(callback: CallbackQuery, state: FSMContext) -> None:
-    await _start_deep_dive(callback.message, state)
+    await _show_direction_menu(callback.message, state)
     await callback.answer()
 
 
 # ---------------------------------------------------------------------------
-# Маршрут: calendar
+# Маршрут: calendar (явная дата/время в мысли)
 # ---------------------------------------------------------------------------
-@router.callback_query(F.data == "rt_calendar:yes")
-async def rt_calendar_yes(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+@router.callback_query(F.data == "cal_route:yes")
+async def cal_route_yes(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     thought = await _get_thought(session, state)
     if not thought:
         await callback.answer(NOT_FOUND, show_alert=True)
@@ -297,9 +332,19 @@ async def rt_calendar_yes(callback: CallbackQuery, session: AsyncSession, state:
     await callback.answer()
 
 
-@router.callback_query(F.data == "rt_calendar:no")
-async def rt_calendar_no(callback: CallbackQuery, state: FSMContext) -> None:
-    await _start_deep_dive(callback.message, state)
+@router.callback_query(F.data == "cal_route:other")
+async def cal_route_other(callback: CallbackQuery, state: FSMContext) -> None:
+    await _show_direction_menu(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cal_route:later")
+async def cal_route_later(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await _save_think_later(callback.message, session, thought, state)
     await callback.answer()
 
 
@@ -318,7 +363,88 @@ async def rt_later_yes(callback: CallbackQuery, session: AsyncSession, state: FS
 
 @router.callback_query(F.data == "rt_later:no")
 async def rt_later_no(callback: CallbackQuery, state: FSMContext) -> None:
-    await _start_deep_dive(callback.message, state)
+    await _show_direction_menu(callback.message, state)
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# empty_thought: можно ли повлиять? (без линейной анкеты)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "ea:no")
+async def ea_no(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if thought:
+        await ThoughtRepository.set_category_status(
+            session, thought, category="journal", status="empty_closed"
+        )
+    await callback.message.answer(
+        "Окей. Мысль сохранена в журнале как та, на которую сейчас не нужно "
+        "тратить энергию.",
+        reply_markup=after_kb(),
+    )
+    await state.set_state(None)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ea:yes")
+async def ea_yes(callback: CallbackQuery, state: FSMContext) -> None:
+    await _show_direction_menu(callback.message, state)
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Меню «разобрать иначе»: контекстные направления
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "dir:goal")
+async def dir_goal(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await callback.answer()
+    await _propose_goal(callback.message, session, thought, state)
+
+
+@router.callback_query(F.data == "dir:research")
+async def dir_research(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await ThoughtRepository.set_category_status(
+        session, thought, category="research", status="research_needed"
+    )
+    await callback.message.answer("Как лучше собрать факты?", reply_markup=research_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "dir:calendar")
+async def dir_calendar(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await _ask_calendar_datetime(callback.message, session, thought, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "dir:delegate")
+async def dir_delegate(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await _do_delegation(callback.message, session, thought, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "dir:later")
+async def dir_later(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    thought = await _get_thought(session, state)
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await _save_think_later(callback.message, session, thought, state)
     await callback.answer()
 
 
@@ -398,6 +524,9 @@ async def _propose_steps(
         first_step=result.first_step,
         project_goal=result.project_goal,
     )
+    await ThoughtRepository.set_category_status(
+        session, thought, category="project", status="steps_generated"
+    )
     await state.update_data(proposed_steps=result.steps)
     await message.answer(
         thought_processor.format_project_steps(result.steps, result.project_goal),
@@ -433,8 +562,12 @@ async def goal_ok(callback: CallbackQuery, session: AsyncSession, state: FSMCont
         success_criteria=data.get("proposed_criteria"),
         project_title=data.get("proposed_title"),
     )
+    await ThoughtRepository.set_category_status(
+        session, thought, category="project", status="goal_confirmed"
+    )
     await callback.message.answer(
-        "Отлично. Результат сохранён.", reply_markup=project_goal_saved_kb()
+        "Отлично. Результат зафиксирован.\n\nТеперь разложим проект на шаги?",
+        reply_markup=goal_confirmed_kb(),
     )
     await callback.answer()
 
@@ -456,12 +589,16 @@ async def on_project_outcome(
         await state.set_state(None)
         return
     await ThoughtRepository.set_project_goal(
-        session, thought, project_goal=message.text
+        session, thought, project_goal=message.text.strip()
+    )
+    await ThoughtRepository.set_category_status(
+        session, thought, category="project", status="goal_confirmed"
     )
     await state.set_state(None)
     await message.answer(
-        f"Отлично. Результат сохранён:\n<b>{html.escape(message.text)}</b>",
-        reply_markup=project_goal_saved_kb(),
+        f"Отлично. Результат зафиксирован:\n<b>{html.escape(message.text.strip())}</b>"
+        "\n\nТеперь разложим проект на шаги?",
+        reply_markup=goal_confirmed_kb(),
     )
 
 
@@ -481,6 +618,17 @@ async def steps_save(callback: CallbackQuery, session: AsyncSession, state: FSMC
     if not thought:
         await callback.answer(NOT_FOUND, show_alert=True)
         return
+    # Гарантируем заголовок для календаря (название первого шага).
+    if not thought.suggested_calendar_title:
+        steps = list(thought.project_steps or [])
+        title = (
+            thought.suggested_first_step
+            or (steps[0] if steps else None)
+            or thought.project_title
+            or thought.summary
+        )
+        if title:
+            thought.suggested_calendar_title = title
     await ThoughtRepository.set_category_status(
         session, thought, category="project", status="project_saved"
     )
@@ -511,12 +659,13 @@ async def on_project_steps(
         await message.answer(NOT_FOUND, reply_markup=after_kb())
         await state.set_state(None)
         return
-    steps = [s.strip() for s in message.text.splitlines() if s.strip()]
-    if not steps:
-        steps = [message.text.strip()]
+    steps = _parse_steps(message.text)
     first_step = steps[0]
     await ThoughtRepository.set_project_steps(
         session, thought, steps=steps, first_step=first_step
+    )
+    await ThoughtRepository.set_category_status(
+        session, thought, category="project", status="steps_generated"
     )
     await state.set_state(None)
     await message.answer(
@@ -651,9 +800,10 @@ async def on_calendar_datetime(
         end_datetime=end,
         google_calendar_url=gcal_url,
     )
-    # Обновляем СУЩЕСТВУЮЩУЮ мысль, дубль не создаём.
+    # Обновляем СУЩЕСТВУЮЩУЮ мысль, дубль не создаём. Категорию проекта/
+    # исследования/делегирования сохраняем — добавление события не меняет суть.
     await ThoughtRepository.set_category_status(
-        session, thought, category="calendar", status="calendar_created"
+        session, thought, category=_calendar_category(thought), status="calendar_created"
     )
 
     await message.answer(
@@ -739,8 +889,9 @@ async def research_calendar(callback: CallbackQuery, session: AsyncSession, stat
         await callback.answer(NOT_FOUND, show_alert=True)
         return
     await ThoughtRepository.set_category_status(
-        session, thought, category="calendar", status="calendar_pending"
+        session, thought, category=_calendar_category(thought), status="calendar_pending"
     )
+    await state.update_data(thought_id=thought.id)
     await state.set_state(ThoughtStates.waiting_for_calendar_datetime)
     await callback.message.answer("Когда запланировать исследование?\n\n" + DATETIME_HINT)
     await callback.answer()
@@ -784,14 +935,14 @@ async def research_simple(callback: CallbackQuery, session: AsyncSession, state:
     }
     label = labels.get(callback.data, "Исследование")
     thought = await _get_thought(session, state)
-    if thought:
-        await ThoughtRepository.set_category_status(
-            session, thought, category="research", status="research_needed"
-        )
+    if not thought:
+        await callback.answer(NOT_FOUND, show_alert=True)
+        return
+    await ThoughtRepository.set_research(session, thought, label)
     await callback.message.answer(
-        f"Зафиксировал первый способ сбора фактов: <b>{label}</b>.\n"
-        "Мысль сохранена в раздел «Исследование».",
-        reply_markup=after_kb(),
+        f"Зафиксировал первый способ сбора фактов: <b>{html.escape(label)}</b>.\n\n"
+        "Мысль обновлена в журнале и помечена как «Исследование · нужны факты».",
+        reply_markup=research_saved_kb(thought.id),
     )
     await state.set_state(None)
     await callback.answer()
@@ -1092,18 +1243,26 @@ async def thought_delete(callback: CallbackQuery, session: AsyncSession) -> None
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data.startswith("reanalyze:"))
 async def reanalyze(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
-    try:
-        thought_id = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Некорректный идентификатор.", show_alert=True)
-        return
-    thought = await ThoughtRepository.get(session, thought_id)
+    # Берём СУЩЕСТВУЮЩУЮ мысль (с проверкой владельца), повторно прогоняем
+    # raw_text через LLM, обновляем summary/type/route — дубль не создаём.
+    thought = await _owned_from_cb(callback, session)
     if not thought:
         await callback.answer("Мысль не найдена.", show_alert=True)
         return
+    await callback.answer()
+    thinking = await callback.message.answer("Думаю над мыслью заново…")
+    analysis = await analyze_thought(thought.raw_text)
+    if calendar_service.has_explicit_datetime(thought.raw_text):
+        analysis.recommended_route = "calendar"
+        analysis.calendar_candidate = True
+        analysis.actionable = True
+    thought = await ThoughtRepository.apply_analysis(session, thought, analysis)
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
     await state.clear()
     await _route_thought(callback.message, session, thought, state)
-    await callback.answer()
 
 
 # ---------------------------------------------------------------------------

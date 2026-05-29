@@ -157,6 +157,18 @@ class ThoughtRepository:
         return thought
 
     @staticmethod
+    async def set_research(
+        session: AsyncSession, thought: Thought, method: str
+    ) -> Thought:
+        """Фиксирует выбранный способ сбора фактов для мысли-исследования."""
+        thought.category = "research"
+        thought.status = "research_needed"
+        thought.research_method = method
+        await session.commit()
+        await session.refresh(thought)
+        return thought
+
+    @staticmethod
     async def set_project_goal(
         session: AsyncSession,
         thought: Thought,
@@ -254,7 +266,10 @@ class ThoughtRepository:
             select(Thought)
             .where(
                 Thought.user_id == user_id,
-                Thought.category == "thoughts_to_finish",
+                or_(
+                    Thought.category == "thoughts_to_finish",
+                    Thought.status == "think_later",
+                ),
                 Thought.is_deleted.is_(False),
             )
             .order_by(Thought.created_at.desc())

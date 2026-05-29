@@ -73,6 +73,8 @@ class Thought(Base):
 
     suggested_first_step: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggested_calendar_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Выбранный способ сбора фактов для маршрута research (журнал/карточка).
+    research_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggested_duration_minutes: Mapped[int] = mapped_column(
         Integer, default=30, server_default="30", nullable=False
     )
